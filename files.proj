@@ -17,6 +17,7 @@
 "./act_printmatches.h"
 "./act_summarize.c"
 "./act_summarize.h"
+"./build.sh"
 "./chroot_build.sh"
 "./compare_jdupes.sh"
 "./includefile.conf"
