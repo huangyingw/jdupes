@@ -6,7 +6,7 @@
 
 # PREFIX determines where files will be installed. Common examples
 # include "/usr" or "/usr/local".
-PREFIX = /usr
+PREFIX = /usr/local
 
 # Certain platforms do not support long options (command line options).
 # To disable long options, uncomment the following line.
@@ -61,14 +61,14 @@ COMPILER_OPTIONS += -std=gnu99 -O2 -g -D_FILE_OFFSET_BITS=64 -fstrict-aliasing -
 
 # Debugging code inclusion
 ifdef LOUD
-DEBUG=1
-COMPILER_OPTIONS += -DLOUD_DEBUG
+	DEBUG=1
+	COMPILER_OPTIONS += -DLOUD_DEBUG
 endif
 ifdef DEBUG
-COMPILER_OPTIONS += -DDEBUG
+	COMPILER_OPTIONS += -DDEBUG
 endif
 ifdef HARDEN
-COMPILER_OPTIONS += -Wformat -Wformat-security -D_FORTIFY_SOURCE=2 -fstack-protector-strong -fPIE -fpie -Wl,-z,relro -Wl,-z,now
+	COMPILER_OPTIONS += -Wformat -Wformat-security -D_FORTIFY_SOURCE=2 -fstack-protector-strong -fPIE -fpie -Wl,-z,relro -Wl,-z,now
 endif
 
 # Catch someone trying to enable BTRFS in flags and turn on ENABLE_BTRFS
@@ -81,38 +81,38 @@ endif
 
 # MinGW needs this for printf() conversions to work
 ifeq ($(OS), Windows_NT)
-ifndef NO_UNICODE
+	ifndef NO_UNICODE
 	UNICODE=1
 	COMPILER_OPTIONS += -municode
 endif
-	COMPILER_OPTIONS += -D__USE_MINGW_ANSI_STDIO=1 -DON_WINDOWS=1
-	OBJS += win_stat.o
-	override undefine ENABLE_BTRFS
-	override undefine HAVE_BTRFS_IOCTL_H
+COMPILER_OPTIONS += -D__USE_MINGW_ANSI_STDIO=1 -DON_WINDOWS=1
+OBJS += win_stat.o
+override undefine ENABLE_BTRFS
+override undefine HAVE_BTRFS_IOCTL_H
 endif
 
 # xxHash support
 ifdef USE_XXHASH
-COMPILER_OPTIONS += -DUSE_HASH_XXHASH64
-OBJS += xxhash.o
+	COMPILER_OPTIONS += -DUSE_HASH_XXHASH64
+	OBJS += xxhash.o
 else
-COMPILER_OPTIONS += -DUSE_HASH_JODYHASH
-OBJS += jody_hash.o
+	COMPILER_OPTIONS += -DUSE_HASH_JODYHASH
+	OBJS += jody_hash.o
 endif
 # Remap old BTRFS support option to new name
 ifdef HAVE_BTRFS_IOCTL_H
-ENABLE_BTRFS=1
+	ENABLE_BTRFS=1
 endif
 # New BTRFS support option
 ifdef ENABLE_BTRFS
-COMPILER_OPTIONS += -DENABLE_BTRFS
-OBJS += act_dedupefiles.o
+	COMPILER_OPTIONS += -DENABLE_BTRFS
+	OBJS += act_dedupefiles.o
 else
-OBJS_CLEAN += act_dedupefiles.o
+	OBJS_CLEAN += act_dedupefiles.o
 endif
 # Low memory mode
 ifdef LOW_MEMORY
-COMPILER_OPTIONS += -DLOW_MEMORY -DJODY_HASH_WIDTH=32 -DSMA_PAGE_SIZE=32768
+	COMPILER_OPTIONS += -DLOW_MEMORY -DJODY_HASH_WIDTH=32 -DSMA_PAGE_SIZE=32768
 endif
 
 CFLAGS += $(COMPILER_OPTIONS) $(CFLAGS_EXTRA)
