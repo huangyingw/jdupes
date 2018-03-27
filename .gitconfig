@@ -1,0 +1,5 @@
+[gsync]
+    remote = origin
+    branch = master
+[commit]
+    message = n
