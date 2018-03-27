@@ -1,5 +1,17 @@
+[remote "jbruchon"]
+    url = https://github.com/jbruchon/jdupes.git
+    fetch = +refs/heads/*:refs/remotes/jbruchon/*
 [gsync]
-    remote = origin
+    remote = jbruchon
     branch = master
+[push]
+    remote = origin
+[branch "master"]
+    remote = origin
+    merge = refs/heads/master
+[branch "dev.fix"]
+    remote = origin
+    merge = refs/heads/dev.fix
 [commit]
     message = n
+
