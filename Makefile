@@ -85,12 +85,20 @@ ifndef NO_UNICODE
 	UNICODE=1
 	COMPILER_OPTIONS += -municode
 endif
-	COMPILER_OPTIONS += -D__USE_MINGW_ANSI_STDIO=1
+	COMPILER_OPTIONS += -D__USE_MINGW_ANSI_STDIO=1 -DON_WINDOWS=1
 	OBJS += win_stat.o
 	override undefine ENABLE_BTRFS
 	override undefine HAVE_BTRFS_IOCTL_H
 endif
 
+# xxHash support
+ifdef USE_XXHASH
+COMPILER_OPTIONS += -DUSE_HASH_XXHASH64
+OBJS += xxhash.o
+else
+COMPILER_OPTIONS += -DUSE_HASH_JODYHASH
+OBJS += jody_hash.o
+endif
 # Remap old BTRFS support option to new name
 ifdef HAVE_BTRFS_IOCTL_H
 ENABLE_BTRFS=1
@@ -109,14 +117,14 @@ endif
 
 CFLAGS += $(COMPILER_OPTIONS) $(CFLAGS_EXTRA)
 
-INSTALL_PROGRAM = $(INSTALL) -c -m 0755
-INSTALL_DATA    = $(INSTALL) -c -m 0644
+INSTALL_PROGRAM = $(INSTALL) -m 0755
+INSTALL_DATA    = $(INSTALL) -m 0644
 
 # ADDITIONAL_OBJECTS - some platforms will need additional object files
 # to support features not supplied by their vendor. Eg: GNU getopt()
 #ADDITIONAL_OBJECTS += getopt.o
 
-OBJS += jdupes.o jody_hash.o jody_paths.o jody_sort.o jody_win_unicode.o string_malloc.o
+OBJS += jdupes.o jody_paths.o jody_sort.o jody_win_unicode.o string_malloc.o
 OBJS += jody_cacheinfo.o
 OBJS += act_deletefiles.o act_linkfiles.o act_printmatches.o act_summarize.o
 OBJS += $(ADDITIONAL_OBJECTS)
@@ -127,15 +135,17 @@ jdupes: $(OBJS)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $(PROGRAM_NAME) $(OBJS)
 
 installdirs:
-	test -d $(DESTDIR)$(BIN_DIR) || $(MKDIR) $(DESTDIR)$(BIN_DIR)
-	test -d $(DESTDIR)$(MAN_DIR) || $(MKDIR) $(DESTDIR)$(MAN_DIR)
+	test -e $(DESTDIR)$(BIN_DIR) || $(MKDIR) $(DESTDIR)$(BIN_DIR)
+	test -e $(DESTDIR)$(MAN_DIR) || $(MKDIR) $(DESTDIR)$(MAN_DIR)
 
 install: jdupes installdirs
 	$(INSTALL_PROGRAM)	$(PROGRAM_NAME)   $(DESTDIR)$(BIN_DIR)/$(PROGRAM_NAME)
 	$(INSTALL_DATA)		$(PROGRAM_NAME).1 $(DESTDIR)$(MAN_DIR)/$(PROGRAM_NAME).$(MAN_EXT)
 
+test:
+	./test.sh
 clean:
-	$(RM) $(OBJS) $(OBJS_CLEAN) $(PROGRAM_NAME) jdupes.exe *~ *.gcno *.gcda *.gcov
+	$(RM) $(OBJS) $(OBJS_CLEAN) $(PROGRAM_NAME) $(PROGRAM_NAME).exe *~ *.gcno *.gcda *.gcov
 
 distclean: clean
 	$(RM) *.pkg.tar.xz

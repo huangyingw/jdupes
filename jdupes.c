@@ -41,7 +41,14 @@
 #include <sys/time.h>
 #include "jdupes.h"
 #include "string_malloc.h"
-#include "jody_hash.h"
+#if defined USE_HASH_JODYHASH
+ #define JODY_HASH_NOCOMPAT
+ #include "jody_hash.h"
+#elif defined USE_HASH_XXHASH64
+ #include "xxhash.h"
+#else
+ #error No USE_HASH is defined
+#endif
 #include "jody_sort.h"
 #include "jody_win_unicode.h"
 #include "jody_cacheinfo.h"
@@ -108,7 +115,7 @@ struct stat s;
  #define PARTIAL_HASH_SIZE 4096
 #endif
 
-static size_t auto_chunk_size;
+static size_t auto_chunk_size = CHUNK_SIZE;
 
 /* Maximum path buffer size to use; must be large enough for a path plus
  * any work that might be done to the array it's stored in. PATH_MAX is
@@ -130,6 +137,32 @@ static size_t auto_chunk_size;
 
 /* For interactive deletion input */
 #define INPUT_SIZE 512
+
+/* Size suffixes - this gets exported */
+const struct size_suffix size_suffix[] = {
+  /* Byte (someone may actually try to use this) */
+  { "b", 1 },
+  { "k", 1024 },
+  { "kib", 1024 },
+  { "m", 1048576 },
+  { "mib", 1048576 },
+  { "g", (uint64_t)1048576 * 1024 },
+  { "gib", (uint64_t)1048576 * 1024 },
+  { "t", (uint64_t)1048576 * 1048576 },
+  { "tib", (uint64_t)1048576 * 1048576 },
+  { "p", (uint64_t)1048576 * 1048576 * 1024},
+  { "pib", (uint64_t)1048576 * 1048576 * 1024},
+  { "e", (uint64_t)1048576 * 1048576 * 1048576},
+  { "eib", (uint64_t)1048576 * 1048576 * 1048576},
+  /* Decimal suffixes */
+  { "kb", 1000 },
+  { "mb", 1000000 },
+  { "gb", 1000000000 },
+  { "tb", 1000000000000 },
+  { "pb", 1000000000000000 },
+  { "eb", 1000000000000000000 },
+  { NULL, 0 },
+};
 
 /* Assemble extension string from compile-time options */
 static const char *extensions[] = {
@@ -160,11 +193,19 @@ static const char *extensions[] = {
     #ifdef SMA_PAGE_SIZE
     "smapage",
     #endif
+    #ifdef USE_JODY_HASH
+    #if JODY_HASH_WIDTH == 64
+    "jodyhash64",
+    #endif
     #if JODY_HASH_WIDTH == 32
-    "hash32",
+    "jodyhash32",
     #endif
     #if JODY_HASH_WIDTH == 16
-    "hash16",
+    "jodyhash16",
+    #endif
+    #endif /* USE_JODY_HASH */
+    #ifdef USE_HASH_XXHASH64
+    "xxhash64",
     #endif
     #ifdef NO_PERMS
     "noperm",
@@ -207,7 +248,7 @@ const struct exclude_tags exclude_tags[] = {
 
 /* Required for progress indicator code */
 static uintmax_t filecount = 0;
-static uintmax_t progress = 0, dir_progress = 0, dupecount = 0;
+static uintmax_t progress = 0, item_progress = 0, dupecount = 0;
 /* Number of read loops before checking progress indicator */
 #define CHECK_MINIMUM 256
 
@@ -232,8 +273,8 @@ static unsigned int max_depth = 0;
 /* File tree head */
 static filetree_t *checktree = NULL;
 
-/* Directory parameter position counter */
-static unsigned int user_dir_count = 1;
+/* Directory/file parameter position counter */
+static unsigned int user_item_count = 1;
 
 /* registerfile() direction options */
 enum tree_direction { NONE, LEFT, RIGHT };
@@ -513,7 +554,7 @@ static void add_exclude(const char *option)
     strcpy(excl->param, p);
   }
 
-  LOUD(fprintf(stderr, "Added exclude: tag '%s', data '%s', size %lu, flags %d\n", opt, excl->param, excl->size, excl->flags);)
+  LOUD(fprintf(stderr, "Added exclude: tag '%s', data '%s', size %lld, flags %d\n", opt, excl->param, (long long)excl->size, excl->flags);)
   string_free(opt);
   return;
 
@@ -530,7 +571,8 @@ bad_size_suffix:
 
 
 extern int getdirstats(const char * const restrict name,
-        jdupes_ino_t * const restrict inode, dev_t * const restrict dev)
+        jdupes_ino_t * const restrict inode, dev_t * const restrict dev,
+	jdupes_mode_t * const restrict mode)
 {
   if (name == NULL || inode == NULL || dev == NULL) nullptr("getdirstats");
   LOUD(fprintf(stderr, "getdirstats('%s', %p, %p)\n", name, (void *)inode, (void *)dev);)
@@ -539,10 +581,14 @@ extern int getdirstats(const char * const restrict name,
   if (win_stat(name, &ws) != 0) return -1;
   *inode = ws.inode;
   *dev = ws.device;
+  *mode = ws.mode;
+  if (!S_ISDIR(ws.mode)) return 1;
 #else
   if (stat(name, &s) != 0) return -1;
   *inode = s.st_ino;
   *dev = s.st_dev;
+  *mode = s.st_mode;
+  if (!S_ISDIR(s.st_mode)) return 1;
 #endif /* ON_WINDOWS */
   return 0;
 }
@@ -615,6 +661,98 @@ extern int check_conditions(const file_t * const restrict file1, const file_t * 
 }
 
 
+/* Check for exclusion conditions for a single file (1 = fail) */
+static int check_singlefile(file_t * const restrict newfile)
+{
+  static char tempname[PATHBUF_SIZE * 2];
+  char * restrict tp = tempname;
+  int excluded;
+
+  if (newfile == NULL) nullptr("check_singlefile()");
+
+  LOUD(fprintf(stderr, "check_singlefile: checking '%s'\n", newfile->d_name));
+
+  /* Exclude hidden files if requested */
+  if (ISFLAG(flags, F_EXCLUDEHIDDEN)) {
+    if (newfile->d_name == NULL) nullptr("check_singlefile newfile->d_name");
+    strcpy(tp, newfile->d_name);
+    tp = basename(tp);
+    if (tp[0] == '.' && strcmp(tp, ".") && strcmp(tp, "..")) {
+      LOUD(fprintf(stderr, "check_singlefile: excluding hidden file (-A on)\n"));
+      return 1;
+    }
+  }
+
+  /* Get file information and check for validity */
+  const int i = getfilestats(newfile);
+  if (i || newfile->size == -1) {
+    LOUD(fprintf(stderr, "check_singlefile: excluding due to bad stat()\n"));
+    return 1;
+  }
+
+  if (!S_ISDIR(newfile->mode)) {
+    /* Exclude zero-length files if requested */
+    if (newfile->size == 0 && !ISFLAG(flags, F_INCLUDEEMPTY)) {
+    LOUD(fprintf(stderr, "check_singlefile: excluding zero-length empty file (-z not set)\n"));
+    return 1;
+  }
+
+    /* Exclude files based on exclusion stack size specs */
+    excluded = 0;
+    for (struct exclude *excl = exclude_head; excl != NULL; excl = excl->next) {
+      uint32_t sflag = excl->flags & XX_EXCL_SIZE;
+      if (
+           ((sflag == X_SIZE_EQ) && (newfile->size != excl->size)) ||
+           ((sflag == X_SIZE_LTEQ) && (newfile->size <= excl->size)) ||
+           ((sflag == X_SIZE_GTEQ) && (newfile->size >= excl->size)) ||
+           ((sflag == X_SIZE_GT) && (newfile->size > excl->size)) ||
+           ((sflag == X_SIZE_LT) && (newfile->size < excl->size))
+      ) excluded = 1;
+    }
+    if (excluded) {
+      LOUD(fprintf(stderr, "check_singlefile: excluding based on xsize limit (-x set)\n"));
+      return 1;
+    }
+  }
+
+#ifdef ON_WINDOWS
+  /* Windows has a 1023 (+1) hard link limit. If we're hard linking,
+   * ignore all files that have hit this limit */
+ #ifndef NO_HARDLINKS
+  if (ISFLAG(flags, F_HARDLINKFILES) && newfile->nlink >= 1024) {
+  #ifdef DEBUG
+    hll_exclude++;
+  #endif
+    LOUD(fprintf(stderr, "check_singlefile: excluding due to Windows 1024 hard link limit\n"));
+    return 1;
+  }
+ #endif /* NO_HARDLINKS */
+#endif /* ON_WINDOWS */
+  return 0;
+}
+
+
+static file_t *init_newfile(const size_t len, file_t * restrict * const restrict filelistp)
+{
+  file_t * const restrict newfile = (file_t *)string_malloc(sizeof(file_t));
+
+  if (!newfile) oom("init_newfile() file structure");
+  if (!filelistp) nullptr("init_newfile() filelistp");
+
+  LOUD(fprintf(stderr, "init_newfile(len %lu, filelistp %p)\n", len, filelistp));
+
+  memset(newfile, 0, sizeof(file_t));
+  newfile->d_name = (char *)string_malloc(len);
+  if (!newfile->d_name) oom("init_newfile() filename");
+
+  newfile->next = *filelistp;
+  newfile->user_order = user_item_count;
+  newfile->size = -1;
+  newfile->duplicates = NULL;
+  return newfile;
+}
+
+
 /* Create a new traversal check object and initialize its values */
 static struct travdone *travdone_alloc(const jdupes_ino_t inode, const dev_t device)
 {
@@ -636,24 +774,45 @@ static struct travdone *travdone_alloc(const jdupes_ino_t inode, const dev_t dev
 }
 
 
+/* Add a single file to the file tree */
+static inline file_t *grokfile(const char * const restrict name, file_t * restrict * const restrict filelistp)
+{
+  file_t * restrict newfile;
+
+  if (!name || !filelistp) nullptr("grokfile()");
+  LOUD(fprintf(stderr, "grokfile: '%s' %p\n", name, filelistp));
+
+  /* Allocate the file_t and the d_name entries */
+  newfile = init_newfile(strlen(name) + 2, filelistp);
+
+  strcpy(newfile->d_name, name);
+
+  /* Single-file [l]stat() and exclusion condition check */
+  if (check_singlefile(newfile) != 0) {
+    LOUD(fprintf(stderr, "grokfile: check_singlefile rejected file\n"));
+    string_free(newfile->d_name);
+    string_free(newfile);
+    return NULL;
+  }
+  return newfile;
+}
+
+
 /* Load a directory's contents into the file tree, recursing as needed */
 static void grokdir(const char * const restrict dir,
                 file_t * restrict * const restrict filelistp,
                 int recurse)
 {
   file_t * restrict newfile;
-#ifndef NO_SYMLINKS
-  static struct stat linfo;
-#endif
   struct dirent *dirinfo;
   static int grokdir_level = 0;
   static char tempname[PATHBUF_SIZE * 2];
   size_t dirlen;
   struct travdone *traverse;
-  struct exclude *excl;
-  int excluded;
+  int i, single = 0;
   jdupes_ino_t inode, n_inode;
   dev_t device, n_device;
+  jdupes_mode_t mode;
 #ifdef UNICODE
   WIN32_FIND_DATA ffd;
   HANDLE hFind = INVALID_HANDLE_VALUE;
@@ -663,10 +822,12 @@ static void grokdir(const char * const restrict dir,
 #endif
 
   if (dir == NULL || filelistp == NULL) nullptr("grokdir()");
-  LOUD(fprintf(stderr, "grokdir: scanning '%s' (order %d)\n", dir, user_dir_count));
+  LOUD(fprintf(stderr, "grokdir: scanning '%s' (order %d, recurse %d)\n", dir, user_item_count, recurse));
 
   /* Double traversal prevention tree */
-  if (getdirstats(dir, &inode, &device) != 0) goto error_travdone;
+  i = getdirstats(dir, &inode, &device, &mode);
+  if (i < 0) goto error_travdone;
+
   if (travdone_head == NULL) {
     travdone_head = travdone_alloc(inode, device);
     if (travdone_head == NULL) goto error_travdone;
@@ -675,13 +836,13 @@ static void grokdir(const char * const restrict dir,
     while (1) {
       if (traverse == NULL) nullptr("grokdir() traverse");
       /* Don't re-traverse directories we've already seen */
-      if (inode == traverse->inode && device == traverse->device) {
-        LOUD(fprintf(stderr, "already seen dir '%s', skipping\n", dir);)
+      if (S_ISDIR(mode) && inode == traverse->inode && device == traverse->device) {
+        LOUD(fprintf(stderr, "already seen item '%s', skipping\n", dir);)
         return;
       } else if (inode > traverse->inode || (inode == traverse->inode && device > traverse->device)) {
         /* Traverse right */
         if (traverse->right == NULL) {
-          LOUD(fprintf(stderr, "traverse dir right '%s'\n", dir);)
+          LOUD(fprintf(stderr, "traverse item right '%s'\n", dir);)
           traverse->right = travdone_alloc(inode, device);
           if (traverse->right == NULL) goto error_travdone;
           break;
@@ -691,7 +852,7 @@ static void grokdir(const char * const restrict dir,
       } else {
         /* Traverse left */
         if (traverse->left == NULL) {
-          LOUD(fprintf(stderr, "traverse dir left '%s'\n", dir);)
+          LOUD(fprintf(stderr, "traverse item left '%s'\n", dir);)
           traverse->left = travdone_alloc(inode, device);
           if (traverse->left == NULL) goto error_travdone;
           break;
@@ -702,8 +863,19 @@ static void grokdir(const char * const restrict dir,
     }
   }
 
-  dir_progress++;
+  item_progress++;
   grokdir_level++;
+
+  /* if dir is actually a file, just add it to the file tree */
+  if (i == 1) {
+    newfile = grokfile(dir, filelistp);
+    if (newfile == NULL) {
+      LOUD(fprintf(stderr, "grokfile rejected '%s'\n", dir));
+      return;
+    }
+    single = 1;
+    goto add_single_file;
+  }
 
 #ifdef UNICODE
   /* Windows requires \* at the end of directory names */
@@ -717,7 +889,7 @@ static void grokdir(const char * const restrict dir,
 
   LOUD(fprintf(stderr, "FindFirstFile: %s\n", dir));
   hFind = FindFirstFile((LPCWSTR)wname, &ffd);
-  if (hFind == INVALID_HANDLE_VALUE) { fprintf(stderr, "\nfile handle bad\n"); goto error_cd; }
+  if (hFind == INVALID_HANDLE_VALUE) { LOUD(fprintf(stderr, "\nfile handle bad\n")); goto error_cd; }
   LOUD(fprintf(stderr, "Loop start\n"));
   do {
     char * restrict tp = tempname;
@@ -736,170 +908,102 @@ static void grokdir(const char * const restrict dir,
 #endif /* UNICODE */
 
     LOUD(fprintf(stderr, "grokdir: readdir: '%s'\n", dirinfo->d_name));
-    if (strcmp(dirinfo->d_name, ".") && strcmp(dirinfo->d_name, "..")) {
-      if (!ISFLAG(flags, F_HIDEPROGRESS)) {
-        gettimeofday(&time2, NULL);
-        if (progress == 0 || time2.tv_sec > time1.tv_sec) {
-          fprintf(stderr, "\rScanning: %" PRIuMAX " files, %" PRIuMAX " dirs (in %u specified)",
-              progress, dir_progress, user_dir_count);
-        }
-        time1.tv_sec = time2.tv_sec;
+    if (!strcmp(dirinfo->d_name, ".") || !strcmp(dirinfo->d_name, "..")) continue;
+    if (!ISFLAG(flags, F_HIDEPROGRESS)) {
+      gettimeofday(&time2, NULL);
+      if (progress == 0 || time2.tv_sec > time1.tv_sec) {
+        fprintf(stderr, "\rScanning: %" PRIuMAX " files, %" PRIuMAX " dirs (in %u specified)",
+            progress, item_progress, user_item_count);
       }
+      time1.tv_sec = time2.tv_sec;
+    }
 
-      /* Assemble the file's full path name, optimized to avoid strcat() */
-      dirlen = strlen(dir);
-      d_name_len = strlen(dirinfo->d_name);
-      memcpy(tp, dir, dirlen+1);
-      if (dirlen != 0 && tp[dirlen-1] != dir_sep) {
-        tp[dirlen] = dir_sep;
-        dirlen++;
-      }
-      if (dirlen + d_name_len + 1 >= (PATHBUF_SIZE * 2)) goto error_overflow;
-      tp += dirlen;
-      memcpy(tp, dirinfo->d_name, d_name_len);
-      tp += d_name_len;
-      *tp = '\0';
-      d_name_len++;
+    /* Assemble the file's full path name, optimized to avoid strcat() */
+    dirlen = strlen(dir);
+    d_name_len = strlen(dirinfo->d_name);
+    memcpy(tp, dir, dirlen+1);
+    if (dirlen != 0 && tp[dirlen-1] != dir_sep) {
+      tp[dirlen] = dir_sep;
+      dirlen++;
+    }
+    if (dirlen + d_name_len + 1 >= (PATHBUF_SIZE * 2)) goto error_overflow;
+    tp += dirlen;
+    memcpy(tp, dirinfo->d_name, d_name_len);
+    tp += d_name_len;
+    *tp = '\0';
+    d_name_len++;
 
-      /* Allocate the file_t and the d_name entries */
-      newfile = (file_t *)string_malloc(sizeof(file_t));
-      if (!newfile) oom("grokdir() file structure");
-      memset(newfile, 0, sizeof(file_t));
-      newfile->d_name = (char *)string_malloc(dirlen + d_name_len + 2);
-      if (!newfile->d_name) oom("grokdir() filename");
+    /* Allocate the file_t and the d_name entries */
+    newfile = init_newfile(dirlen + d_name_len + 2, filelistp);
 
-      newfile->next = *filelistp;
-      newfile->user_order = user_dir_count;
-      newfile->size = -1;
-      newfile->duplicates = NULL;
+    tp = tempname;
+    memcpy(newfile->d_name, tp, dirlen + d_name_len);
 
-      tp = tempname;
-      memcpy(newfile->d_name, tp, dirlen + d_name_len);
+    /* Single-file [l]stat() and exclusion condition check */
+    if (check_singlefile(newfile) != 0) {
+      LOUD(fprintf(stderr, "grokdir: check_singlefile rejected file\n"));
+      string_free(newfile->d_name);
+      string_free(newfile);
+      continue;
+    }
 
-      if (ISFLAG(flags, F_EXCLUDEHIDDEN)) {
-        /* WARNING: Re-used tp here to eliminate a strdup() */
-        strncpy(tp, newfile->d_name, dirlen + d_name_len);
-        tp = basename(tp);
-        if (tp[0] == '.' && strcmp(tp, ".") && strcmp(tp, "..")) {
-          LOUD(fprintf(stderr, "grokdir: excluding hidden file (-A on)\n"));
+    /* Optionally recurse directories, including symlinked ones if requested */
+    if (S_ISDIR(newfile->mode)) {
+      if (recurse) {
+        /* --one-file-system */
+        if (ISFLAG(flags, F_ONEFS)
+            && (getdirstats(newfile->d_name, &n_inode, &n_device, &mode) == 0)
+            && (device != n_device)) {
+          LOUD(fprintf(stderr, "grokdir: directory: not recursing (--one-file-system)\n"));
           string_free(newfile->d_name);
           string_free(newfile);
           continue;
         }
-      }
-
-      /* Get file information and check for validity */
-      const int i = getfilestats(newfile);
-      if (i || newfile->size == -1) {
-        LOUD(fprintf(stderr, "grokdir: excluding due to bad stat()\n"));
-        string_free(newfile->d_name);
-        string_free(newfile);
-        continue;
-      }
-
-      if (!S_ISDIR(newfile->mode)) {
-        /* Exclude zero-length files if requested */
-        if (newfile->size == 0 && !ISFLAG(flags, F_INCLUDEEMPTY)) {
-          LOUD(fprintf(stderr, "grokdir: excluding zero-length empty file (-z not set)\n"));
-          string_free(newfile->d_name);
-          string_free(newfile);
-          continue;
-        }
-
-        /* Exclude files based on exclusion stack size specs */
-	excl = exclude_head;
-	excluded = 0;
-	while (excl != NULL) {
-          uint32_t sflag = excl->flags & XX_EXCL_SIZE;
-          if (
-               ((sflag == X_SIZE_EQ) && (newfile->size != excl->size)) ||
-               ((sflag == X_SIZE_LTEQ) && (newfile->size <= excl->size)) ||
-               ((sflag == X_SIZE_GTEQ) && (newfile->size >= excl->size)) ||
-               ((sflag == X_SIZE_GT) && (newfile->size > excl->size)) ||
-               ((sflag == X_SIZE_LT) && (newfile->size < excl->size))
-          ) excluded = 1;
-	  excl = excl->next;
-        }
-	if (excluded) {
-          LOUD(fprintf(stderr, "grokdir: excluding based on xsize limit (-x set)\n"));
-          string_free(newfile->d_name);
-          string_free(newfile);
-          continue;
-	}
-      }
-
 #ifndef NO_SYMLINKS
-      /* Get lstat() information */
-      if (lstat(newfile->d_name, &linfo) == -1) {
-        LOUD(fprintf(stderr, "grokdir: excluding due to bad lstat()\n"));
-        string_free(newfile->d_name);
-        string_free(newfile);
-        continue;
-      }
-#endif
-
-      /* Windows has a 1023 (+1) hard link limit. If we're hard linking,
-       * ignore all files that have hit this limit */
-#ifdef ON_WINDOWS
- #ifndef NO_HARDLINKS
-      if (ISFLAG(flags, F_HARDLINKFILES) && newfile->nlink >= 1024) {
-  #ifdef DEBUG
-        hll_exclude++;
-  #endif
-        LOUD(fprintf(stderr, "grokdir: excluding due to Windows 1024 hard link limit\n"));
-        string_free(newfile->d_name);
-        string_free(newfile);
-        continue;
-      }
- #endif
-#endif
-      /* Optionally recurse directories, including symlinked ones if requested */
-      if (S_ISDIR(newfile->mode)) {
-        if (recurse) {
-          /* --one-file-system */
-          if (ISFLAG(flags, F_ONEFS)
-              && (getdirstats(newfile->d_name, &n_inode, &n_device) == 0)
-              && (device != n_device)) {
-            LOUD(fprintf(stderr, "grokdir: directory: not recursing (--one-file-system)\n"));
-            string_free(newfile->d_name);
-            string_free(newfile);
-            continue;
-          }
-#ifndef NO_SYMLINKS
-          else if (/*ISFLAG(flags, F_FOLLOWLINKS) ||*/ !S_ISLNK(linfo.st_mode)) {
-            LOUD(fprintf(stderr, "grokdir: directory: recursing (-r/-R)\n"));
-            grokdir(newfile->d_name, filelistp, recurse);
-          }
+        else if (ISFLAG(flags, F_FOLLOWLINKS) || !ISFLAG(newfile->flags, F_IS_SYMLINK)) {
+          LOUD(fprintf(stderr, "grokdir: directory(symlink): recursing (-r/-R)\n"));
+          grokdir(newfile->d_name, filelistp, recurse);
+        }
 #else
-          else {
-            LOUD(fprintf(stderr, "grokdir: directory: recursing (-r/-R)\n"));
-            grokdir(newfile->d_name, filelistp, recurse);
-          }
-#endif
+        else {
+          LOUD(fprintf(stderr, "grokdir: directory: recursing (-r/-R)\n"));
+          grokdir(newfile->d_name, filelistp, recurse);
         }
-        LOUD(fprintf(stderr, "grokdir: directory: not recursing\n"));
-        string_free(newfile->d_name);
-        string_free(newfile);
-        continue;
+#endif
+      } else { LOUD(fprintf(stderr, "grokdir: directory: not recursing\n")); }
+      string_free(newfile->d_name);
+      string_free(newfile);
+      continue;
+    } else {
+add_single_file:
+      /* Add regular files to list, including symlink targets if requested */
+#ifndef NO_SYMLINKS
+      if (!ISFLAG(newfile->flags, F_IS_SYMLINK) || (ISFLAG(newfile->flags, F_IS_SYMLINK) && ISFLAG(flags, F_FOLLOWLINKS))) {
+#else
+      if (S_ISREG(newfile->mode)) {
+#endif
+        *filelistp = newfile;
+        filecount++;
+        progress++;
+
       } else {
-        /* Add regular files to list, including symlink targets if requested */
-#ifndef NO_SYMLINKS
-        if (S_ISREG(linfo.st_mode) || (S_ISLNK(linfo.st_mode) && ISFLAG(flags, F_FOLLOWLINKS))) {
-#else
-        if (S_ISREG(newfile->mode)) {
-#endif
-          *filelistp = newfile;
-          filecount++;
-          progress++;
-        } else {
-          LOUD(fprintf(stderr, "grokdir: not a regular file: %s\n", newfile->d_name);)
-          string_free(newfile->d_name);
-          string_free(newfile);
-          continue;
+        LOUD(fprintf(stderr, "grokdir: not a regular file: %s\n", newfile->d_name);)
+        string_free(newfile->d_name);
+        string_free(newfile);
+        if (single == 1) {
+          single = 0;
+          goto skip_single;
         }
+        continue;
       }
     }
+    /* Skip directory stuff if adding only a single file */
+    if (single == 1) {
+      single = 0;
+      goto skip_single;
+    }
   }
+
 #ifdef UNICODE
   while (FindNextFile(hFind, &ffd) != 0);
   FindClose(hFind);
@@ -907,11 +1011,11 @@ static void grokdir(const char * const restrict dir,
   closedir(cd);
 #endif
 
-
+skip_single:
   grokdir_level--;
   if (grokdir_level == 0 && !ISFLAG(flags, F_HIDEPROGRESS)) {
-    fprintf(stderr, "\rScanning: %" PRIuMAX " files, %" PRIuMAX " dirs (in %u specified)",
-            progress, dir_progress, user_dir_count);
+    fprintf(stderr, "\rScanning: %" PRIuMAX " files, %" PRIuMAX " items (in %u specified)",
+            progress, item_progress, user_item_count);
   }
   return;
 
@@ -926,16 +1030,20 @@ error_overflow:
   exit(EXIT_FAILURE);
 }
 
+
 /* Use Jody Bruchon's hash function on part or all of a file */
-static hash_t *get_filehash(const file_t * const restrict checkfile,
+static jdupes_hash_t *get_filehash(const file_t * const restrict checkfile,
                 const size_t max_read)
 {
   off_t fsize;
   /* This is an array because we return a pointer to it */
-  static hash_t hash[1];
-  static hash_t chunk[(CHUNK_SIZE / sizeof(hash_t))];
+  static jdupes_hash_t hash[1];
+  static jdupes_hash_t chunk[(CHUNK_SIZE / sizeof(jdupes_hash_t))];
   FILE *file;
   int check = 0;
+#ifdef USE_HASH_XXHASH64
+  XXH64_state_t *xxhstate;
+#endif
 
   if (checkfile == NULL || checkfile->d_name == NULL) nullptr("get_filehash()");
   LOUD(fprintf(stderr, "get_filehash('%s', %" PRIdMAX ")\n", checkfile->d_name, (intmax_t)max_read);)
@@ -968,6 +1076,7 @@ static hash_t *get_filehash(const file_t * const restrict checkfile,
       return hash;
     }
   }
+  errno = 0;
 #ifdef UNICODE
   if (!M2W(checkfile->d_name, wstr)) file = NULL;
   else file = _wfopen(wstr, FILE_MODE_RO);
@@ -975,7 +1084,7 @@ static hash_t *get_filehash(const file_t * const restrict checkfile,
   file = fopen(checkfile->d_name, FILE_MODE_RO);
 #endif
   if (file == NULL) {
-    fprintf(stderr, "\nerror opening file "); fwprint(stderr, checkfile->d_name, 1);
+    fprintf(stderr, "\n%s error opening file ", strerror(errno)); fwprint(stderr, checkfile->d_name, 1);
     return NULL;
   }
   /* Actually seek past the first chunk if applicable
@@ -988,6 +1097,13 @@ static hash_t *get_filehash(const file_t * const restrict checkfile,
     }
     fsize -= PARTIAL_HASH_SIZE;
   }
+
+#ifdef USE_HASH_XXHASH64
+  xxhstate = XXH64_createState();
+  if (xxhstate == NULL) nullptr("xxhstate");
+  XXH64_reset(xxhstate, 0);
+#endif
+
   /* Read the file in CHUNK_SIZE chunks until we've read it all. */
   while (fsize > 0) {
     size_t bytes_to_read;
@@ -1000,7 +1116,12 @@ static hash_t *get_filehash(const file_t * const restrict checkfile,
       return NULL;
     }
 
+#if defined USE_HASH_JODYHASH
     *hash = jody_block_hash(chunk, *hash, bytes_to_read);
+#elif defined USE_HASH_XXHASH64
+    XXH64_update(xxhstate, chunk, bytes_to_read);
+#endif
+
     if ((off_t)bytes_to_read > fsize) break;
     else fsize -= (off_t)bytes_to_read;
 
@@ -1015,6 +1136,10 @@ static hash_t *get_filehash(const file_t * const restrict checkfile,
 
   fclose(file);
 
+#ifdef USE_HASH_XXHASH64
+  *hash = XXH64_digest(xxhstate);
+  XXH64_freeState(xxhstate);
+#endif 
   LOUD(fprintf(stderr, "get_filehash: returning hash: 0x%016jx\n", (uintmax_t)*hash));
   return hash;
 }
@@ -1211,7 +1336,7 @@ static inline void rebalance_tree(filetree_t * const tree)
 static file_t **checkmatch(filetree_t * restrict tree, file_t * const restrict file)
 {
   int cmpresult = 0;
-  const hash_t * restrict filehash;
+  const jdupes_hash_t * restrict filehash;
 
   if (tree == NULL || file == NULL || tree->file == NULL || tree->file->d_name == NULL || file->d_name == NULL) nullptr("checkmatch()");
   LOUD(fprintf(stderr, "checkmatch ('%s', '%s')\n", tree->file->d_name, file->d_name));
@@ -1486,6 +1611,9 @@ static inline void help_text(void)
 {
   printf("Usage: jdupes [options] DIRECTORY...\n\n");
 
+#ifdef LOUD
+  printf(" -@ --loud        \toutput annoying low-level debug info while running\n");
+#endif
   printf(" -1 --one-file-system \tdo not match files on different filesystems/devices\n");
   printf(" -A --nohidden    \texclude hidden files from consideration\n");
 #ifdef ENABLE_BTRFS
@@ -1497,6 +1625,9 @@ static inline void help_text(void)
   printf("                  \twith -s or --symlinks, or when specifying a\n");
   printf("                  \tparticular directory more than once; refer to the\n");
   printf("                  \tdocumentation for additional information\n");
+#ifdef DEBUG
+  printf(" -D --debug       \toutput debug statistics after completion\n");
+#endif
   printf(" -f --omitfirst   \tomit the first file in each set of matches\n");
   printf(" -h --help        \tdisplay this help message\n");
 #ifndef NO_HARDLINKS
@@ -1526,8 +1657,9 @@ static inline void help_text(void)
   printf(" -p --permissions \tdon't consider files with different owner/group or\n");
   printf("                  \tpermission bits as duplicates\n");
 #endif
-  printf(" -r --recurse     \tfor every directory given follow subdirectories\n");
-  printf("                  \tencountered within\n");
+  printf(" -Q --quick       \tskip byte-for-byte confirmation for quick matching\n");
+  printf("                  \tWARNING: -Q can result in data loss! Be very careful!\n");
+  printf(" -r --recurse     \tfor every directory, process its subdirectories too\n");
   printf(" -R --recurse:    \tfor each directory given after this option follow\n");
   printf("                  \tsubdirectories encountered within (note the ':' at\n");
   printf("                  \tthe end of the option, manpage for more details)\n");
@@ -1543,12 +1675,12 @@ static inline void help_text(void)
   printf(" -v --version     \tdisplay jdupes version and license information\n");
   printf(" -x --xsize=SIZE  \texclude files of size < SIZE bytes from consideration\n");
   printf("    --xsize=+SIZE \t'+' specified before SIZE, exclude size > SIZE\n");
-  printf("                  \tK/M/G size suffixes can be used (case-insensitive)\n");
   printf(" -X --exclude=spec:info\texclude files based on specified criteria\n");
-  printf("                  \tspecs: dir size+-=\n");
+  printf("                  \tspecs: size+-=\n");
   printf("                  \tExclusions are cumulative: -X dir:abc -X dir:efg\n");
   printf(" -z --zeromatch   \tconsider zero-length files to be duplicates\n");
   printf(" -Z --softabort   \tIf the user aborts (i.e. CTRL-C) act on matches so far\n");
+  printf("\nFor sizes, K/M/G/T/P/E[B|iB] suffixes can be used (case-insensitive)\n");
 #ifdef OMIT_GETOPT_LONG
   printf("Note: Long options are not supported in this build.\n\n");
 #endif
@@ -1561,7 +1693,6 @@ int wmain(int argc, wchar_t **wargv)
 int main(int argc, char **argv)
 #endif
 {
-  static struct proc_cacheinfo pci;
   static file_t *files = NULL;
   static file_t *curfile;
   static char **oldargv;
@@ -1570,6 +1701,9 @@ int main(int argc, char **argv)
   static int opt;
   static int pm = 1;
   static ordertype_t ordertype = ORDER_NAME;
+#ifndef ON_WINDOWS
+  static struct proc_cacheinfo pci;
+#endif
 
 #ifndef OMIT_GETOPT_LONG
   static const struct option long_options[] =
@@ -1583,9 +1717,10 @@ int main(int argc, char **argv)
     { "omitfirst", 0, 0, 'f' },
     { "help", 0, 0, 'h' },
     { "hardlinks", 0, 0, 'H' },
-    { "linkhard", 0, 0, 'L' },
     { "reverse", 0, 0, 'i' },
     { "isolate", 0, 0, 'I' },
+    { "linksoft", 0, 0, 'l' },
+    { "linkhard", 0, 0, 'L' },
     { "summarize", 0, 0, 'm'},
     { "summary", 0, 0, 'm' },
     { "noempty", 0, 0, 'n' },
@@ -1599,7 +1734,6 @@ int main(int argc, char **argv)
     { "recursive", 0, 0, 'r' },
     { "recurse:", 0, 0, 'R' },
     { "recursive:", 0, 0, 'R' },
-    { "linksoft", 0, 0, 'l' },
     { "symlinks", 0, 0, 's' },
     { "size", 0, 0, 'S' },
     { "version", 0, 0, 'v' },
@@ -1607,7 +1741,7 @@ int main(int argc, char **argv)
     { "exclude", 1, 0, 'X' },
     { "zeromatch", 0, 0, 'z' },
     { "softabort", 0, 0, 'Z' },
-    { 0, 0, 0, 0 }
+    { NULL, 0, 0, 0 }
   };
 #define GETOPT getopt_long
 #else
@@ -1626,6 +1760,8 @@ int main(int argc, char **argv)
   argv = (char **)string_malloc(sizeof(char *) * argc);
   if (!argv) oom("main() unicode argv");
   widearg_to_argv(argc, wargv, argv);
+  /* fix up __argv so getopt etc. don't crash */
+  __argv = argv;
   /* Only use UTF-16 for terminal output, else use UTF-8 */
   if (!_isatty(_fileno(stdout))) out_mode = _O_BINARY;
   else out_mode = _O_U16TEXT;
@@ -1633,6 +1769,7 @@ int main(int argc, char **argv)
   else err_mode = _O_U16TEXT;
 #endif /* UNICODE */
 
+#ifndef ON_WINDOWS
   /* Auto-tune chunk size to be half of L1 data cache if possible */
   get_proc_cacheinfo(&pci);
   if (pci.l1 != 0) auto_chunk_size = (pci.l1 / 2);
@@ -1642,6 +1779,7 @@ int main(int argc, char **argv)
   /* Force to a multiple of 4096 if it isn't already */
   if ((auto_chunk_size & 0x00000fffUL) != 0)
     auto_chunk_size = (auto_chunk_size + 0x00000fffUL) & 0x000ff000;
+#endif /* ON_WINDOWS */
 
   program_name = argv[0];
 
@@ -1879,7 +2017,7 @@ int main(int argc, char **argv)
     for (int x = optind; x < firstrecurse; x++) {
       slash_convert(argv[x]);
       grokdir(argv[x], &files, 0);
-      user_dir_count++;
+      user_item_count++;
     }
 
     /* Set F_RECURSE for directories after --recurse: */
@@ -1888,19 +2026,22 @@ int main(int argc, char **argv)
     for (int x = firstrecurse; x < argc; x++) {
       slash_convert(argv[x]);
       grokdir(argv[x], &files, 1);
-      user_dir_count++;
+      user_item_count++;
     }
   } else {
     for (int x = optind; x < argc; x++) {
       slash_convert(argv[x]);
       grokdir(argv[x], &files, ISFLAG(flags, F_RECURSE));
-      user_dir_count++;
+      user_item_count++;
     }
   }
 
   if (ISFLAG(flags, F_REVERSESORT)) sort_direction = -1;
   if (!ISFLAG(flags, F_HIDEPROGRESS)) fprintf(stderr, "\n");
-  if (!files) exit(EXIT_SUCCESS);
+  if (!files) {
+    fwprint(stderr, "No duplicates found.", 1);
+    exit(EXIT_SUCCESS);
+  }
 
   curfile = files;
   progress = 0;
@@ -2023,7 +2164,7 @@ skip_file_scan:
   if (ISFLAG(flags, F_DEBUG)) {
     fprintf(stderr, "\n%d partial (+%d small) -> %d full hash -> %d full (%d partial elim) (%d hash%u fail)\n",
         partial_hash, small_file, full_hash, partial_to_full,
-        partial_elim, hash_fail, (unsigned int)sizeof(hash_t)*8);
+        partial_elim, hash_fail, (unsigned int)sizeof(jdupes_hash_t)*8);
     fprintf(stderr, "%" PRIuMAX " total files, %" PRIuMAX " comparisons, branch L %u, R %u, both %u, max tree depth %u\n",
         filecount, comparisons, left_branch, right_branch,
         left_branch + right_branch, max_depth);
@@ -2031,8 +2172,11 @@ skip_file_scan:
         sma_allocs, sma_free_good, sma_free_merged, sma_free_replaced,
 	sma_free_ignored, sma_free_reclaimed,
         sma_free_scanned, sma_free_tails);
-    fprintf(stderr, "I/O chunk size: %" PRIuMAX " KiB (%s)\n", (uintmax_t)(auto_chunk_size >> 10),
-        (pci.l1 + pci.l1d) != 0 ? "dynamically sized" : "default size");
+#ifndef ON_WINDOWS
+    fprintf(stderr, "I/O chunk size: %" PRIuMAX " KiB (%s)\n", (uintmax_t)(auto_chunk_size >> 10), (pci.l1 + pci.l1d) != 0 ? "dynamically sized" : "default size");
+#else
+    fprintf(stderr, "I/O chunk size: %" PRIuMAX " KiB (default size)\n", (uintmax_t)(auto_chunk_size >> 10));
+#endif
 #ifdef ON_WINDOWS
  #ifndef NO_HARDLINKS
     if (ISFLAG(flags, F_HARDLINKFILES))

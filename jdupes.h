@@ -8,24 +8,23 @@
 extern "C" {
 #endif
 
-#include <limits.h>
-#include <stdint.h>
-#include <sys/types.h>
-#include <unistd.h>
-#include "string_malloc.h"
-#include "jody_hash.h"
-#include "jody_sort.h"
-#include "version.h"
+/* Select hash algorithm */
+//#define USE_HASH_JODYHASH /* jodyhash */
+//#define USE_HASH_XXHASH64 /* xxHash64 */
 
-/* Optional btrfs support */
-#ifdef ENABLE_BTRFS
-#include <sys/ioctl.h>
-#include <linux/btrfs.h>
+/* Failsafes */
+#if !defined USE_HASH_JODYHASH && !defined USE_HASH_XXHASH64
+#define USE_HASH_JODYHASH
+#endif
+#if defined USE_HASH_JODYHASH && defined USE_HASH_XXHASH64
+#error Multiple USE_HASH options
 #endif
 
 /* Detect Windows and modify as needed */
 #if defined _WIN32 || defined __CYGWIN__
- #define ON_WINDOWS 1
+ #ifndef ON_WINDOWS
+  #define ON_WINDOWS 1
+ #endif
  #define NO_SYMLINKS 1
  #define NO_PERMS 1
  #define NO_SIGACTION 1
@@ -37,6 +36,39 @@ extern "C" {
  #include "win_stat.h"
  #define S_ISREG WS_ISREG
  #define S_ISDIR WS_ISDIR
+#endif /* Win32 */
+
+#include <limits.h>
+#include <stdint.h>
+#include <sys/types.h>
+#include <unistd.h>
+#include "string_malloc.h"
+#include "jody_sort.h"
+#include "version.h"
+
+/* Configure hash function based on choice above */
+#if defined USE_HASH_JODYHASH
+ #define JODY_HASH_NOCOMPAT
+ #include "jody_hash.h"
+#elif defined USE_HASH_XXHASH64
+ #include "xxhash.h"
+#endif
+
+/* Optional btrfs support */
+#ifdef ENABLE_BTRFS
+#include <sys/ioctl.h>
+#include <linux/btrfs.h>
+#endif
+
+/* Set hash type (change this if swapping in a different hash function) */
+#if defined USE_HASH_JODYHASH
+ typedef jodyhash_t jdupes_hash_t;
+#elif defined USE_HASH_XXHASH64
+ typedef XXH64_hash_t jdupes_hash_t;
+#endif
+
+/* Some types are different on Windows */
+#ifdef ON_WINDOWS
  typedef uint64_t jdupes_ino_t;
  typedef uint32_t jdupes_mode_t;
  extern const char dir_sep;
@@ -177,8 +209,8 @@ typedef struct _file {
   jdupes_mode_t mode;
   off_t size;
   jdupes_ino_t inode;
-  hash_t filehash_partial;
-  hash_t filehash;
+  jdupes_hash_t filehash_partial;
+  jdupes_hash_t filehash;
   time_t mtime;
   uint32_t flags;  /* Status flags */
   unsigned int user_order; /* Order of the originating command-line parameter */
@@ -254,30 +286,7 @@ struct size_suffix {
   const int64_t multiplier;
 };
 
-static const struct size_suffix size_suffix[] = {
-  /* Byte (someone may actually try to use this) */
-  { "b", 1 },
-  { "k", 1024 },
-  { "kib", 1024 },
-  { "m", 1048576 },
-  { "mib", 1048576 },
-  { "g", (uint64_t)1048576 * 1024 },
-  { "gib", (uint64_t)1048576 * 1024 },
-  { "t", (uint64_t)1048576 * 1048576 },
-  { "tib", (uint64_t)1048576 * 1048576 },
-  { "p", (uint64_t)1048576 * 1048576 * 1024},
-  { "pib", (uint64_t)1048576 * 1048576 * 1024},
-  { "e", (uint64_t)1048576 * 1048576 * 1048576},
-  { "eib", (uint64_t)1048576 * 1048576 * 1048576},
-  /* Decimal suffixes */
-  { "kb", 1000 },
-  { "mb", 1000000 },
-  { "gb", 1000000000 },
-  { "tb", 1000000000000 },
-  { "pb", 1000000000000000 },
-  { "eb", 1000000000000000000 },
-  { NULL, 0 },
-};
+extern const struct size_suffix size_suffix[];
 
 
 extern void oom(const char * const restrict msg);
@@ -285,7 +294,8 @@ extern void nullptr(const char * restrict func);
 extern int file_has_changed(file_t * const restrict file);
 extern int getfilestats(file_t * const restrict file);
 extern int getdirstats(const char * const restrict name,
-        jdupes_ino_t * const restrict inode, dev_t * const restrict dev);
+        jdupes_ino_t * const restrict inode, dev_t * const restrict dev,
+	jdupes_mode_t * const restrict mode);
 extern int check_conditions(const file_t * const restrict file1, const file_t * const restrict file2);
 extern unsigned int get_max_dupes(const file_t *files, unsigned int * const restrict max,
 		                unsigned int * const restrict n_files);
