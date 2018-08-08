@@ -21,6 +21,12 @@ byte-by-byte comparison.
 .B -@ --loud
 output annoying low-level debug info while running
 .TP
+.B -0 --printnull
+when printing matches, use null bytes instead of CR/LF bytes, just like
+'find -print0' does. This has no effect with any action mode other than
+the default "print matches" (delete, link, etc. will still print normal
+line endings in the output.)
+.TP
 .B -1 --one-file-system
 do not match files that are on different filesystems or devices
 .TP
@@ -31,6 +37,11 @@ exclude hidden files from consideration
 issue the btrfs same-extents ioctl to trigger a deduplication on
 disk. The program must be built with btrfs support for this option
 to be available
+.TP
+.B -C --chunksize=\fIBYTES\fR
+set the I/O chunk size manually; larger values may improve performance
+on rotating media by reducing the number of head seeks required, but
+also increases memory usage and can reduce performance in some cases
 .TP
 .B -D --debug
 if this feature is compiled in, show debugging statistics and info
@@ -86,6 +97,12 @@ name - sort by filename (default)
 .B -p --permissions
 don't consider files with different owner/group or permission bits as
 duplicates
+.TP
+.B -P --print=type
+print extra information to stdout; valid options are:
+early - matches that pass early size/permission/link/etc. checks
+partial - files whose partial hashes match
+fullhash - files whose full hashes match
 .TP
 .B -Q --quick
 .B [WARNING: RISK OF DATA LOSS, SEE CAVEATS]
@@ -238,6 +255,21 @@ set for which any amount of data loss is unacceptable. This option is not
 included in the help text for the program due to its risky nature.
 .B You have been warned!
 
+Using the
+.B \-C
+or
+.BR \-\-chunksize
+option to override I/O chunk size can increase performance on rotating
+storage media by reducing "head thrashing," reading larger amounts of
+data sequentially from each file. This tunable size can have bad side
+effects; the default size maximizes algorithmic performance without
+regard to the I/O characteristics of any given device and uses a modest
+amount of memory, but other values may greatly increase memory usage or
+incur a lot more system call overhead. Try several different values to
+see how they affect performance for your hardware and data set. This
+option does not affect match results in any way, so even if it slows
+down the file matching process it will not hurt anything.
+
 .SH REPORTING BUGS
 Send all bug reports to jody@jodybruchon.com or use the Issue tracker at
 http://github.com/jbruchon/jdupes/issues
@@ -245,9 +277,6 @@ http://github.com/jbruchon/jdupes/issues
 .SH AUTHOR
 jdupes is a fork of 'fdupes' which is maintained by and contains
 extra code copyrighted by Jody Bruchon <jody@jodybruchon.com>
-
-jdupes was once called 'fdupes-jody' but the name was changed at the
-request of Adrian Lopez to avoid confusion between the two programs.
 
 Based on 'fdupes' created by Adrian Lopez <adrian2@caribe.net>
 

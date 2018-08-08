@@ -3,5 +3,7 @@ SCRIPT=$(realpath "$0")
 SCRIPTPATH=$(dirname "$SCRIPT")
 cd "$SCRIPTPATH"
 
-make \
-    && ~/loadrc/gitrc/gci.sh
+make clean \
+    && make \
+    && make install \
+    && ~/loadrc/gitrc/g.sh

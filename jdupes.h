@@ -92,13 +92,14 @@ extern "C" {
 
 /* Windows + Unicode compilation */
 #ifdef UNICODE
-extern wchar_t wname[PATH_MAX];
-extern wchar_t wname2[PATH_MAX];
-extern wchar_t wstr[PATH_MAX];
-extern int out_mode;
-extern int err_mode;
- #define M2W(a,b) MultiByteToWideChar(CP_UTF8, 0, a, -1, (LPWSTR)b, PATH_MAX)
- #define W2M(a,b) WideCharToMultiByte(CP_UTF8, 0, a, -1, (LPSTR)b, PATH_MAX, NULL, NULL)
+ #define WPATH_MAX 8192
+ #define PATHBUF_SIZE WPATH_MAX
+  typedef wchar_t wpath_t[WPATH_MAX];
+  extern wpath_t wname,wname2,wstr;
+  extern int out_mode;
+  extern int err_mode;
+ #define M2W(a,b) MultiByteToWideChar(CP_UTF8, 0, a, -1, (LPWSTR)b, WPATH_MAX)
+ #define W2M(a,b) WideCharToMultiByte(CP_UTF8, 0, a, -1, (LPSTR)b, WPATH_MAX, NULL, NULL)
 #endif /* UNICODE */
 
 #ifndef NO_SYMLINKS
@@ -111,7 +112,6 @@ extern int err_mode;
 
 /* Low memory option overrides */
 #ifdef LOW_MEMORY
- #undef USE_TREE_REBALANCE
  #ifndef NO_PERMS
   #define NO_PERMS 1
  #endif
@@ -167,6 +167,7 @@ extern uint_fast32_t flags;
 #define F_MAKESYMLINKS		0x00200000U
 #define F_PRINTMATCHES		0x00400000U
 #define F_ONEFS			0x00800000U
+#define F_PRINTNULL		0x01000000U
 
 #define F_LOUD			0x40000000U
 #define F_DEBUG			0x80000000U
@@ -177,6 +178,11 @@ extern uint_fast32_t flags;
 #define F_HASH_FULL		0x00000004U
 #define F_HAS_DUPES		0x00000008U
 #define F_IS_SYMLINK		0x00000010U
+
+/* Extra print flags */
+#define P_PARTIAL		0x00000001U
+#define P_EARLYMATCH		0x00000002U
+#define P_FULLHASH		0x00000004U
 
 typedef enum {
   ORDER_NAME = 0,
@@ -213,10 +219,8 @@ typedef struct _file {
   jdupes_hash_t filehash;
   time_t mtime;
   uint32_t flags;  /* Status flags */
+#ifndef NO_USER_ORDER
   unsigned int user_order; /* Order of the originating command-line parameter */
-#ifndef NO_PERMS
-  uid_t uid;
-  gid_t gid;
 #endif
 #ifndef NO_HARDLINKS
  #ifndef ON_WINDOWS
@@ -225,17 +229,16 @@ typedef struct _file {
   uint32_t nlink;  /* link count on Windows is always a DWORD */
  #endif
 #endif
+#ifndef NO_PERMS
+  uid_t uid;
+  gid_t gid;
+#endif
 } file_t;
 
 typedef struct _filetree {
   file_t *file;
   struct _filetree *left;
   struct _filetree *right;
-#ifdef USE_TREE_REBALANCE
-  struct _filetree *parent;
-  unsigned int left_weight;
-  unsigned int right_weight;
-#endif /* USE_TREE_REBALANCE */
 } filetree_t;
 
 /* This gets used in many functions */

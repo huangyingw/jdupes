@@ -1,5 +1,5 @@
-/* jdupes (C) 2015-2017 Jody Bruchon <jody@jodybruchon.com>
-   Derived from fdupes (C) 1999-2017 Adrian Lopez
+/* jdupes (C) 2015-2018 Jody Bruchon <jody@jodybruchon.com>
+   Derived from fdupes (C) 1999-2018 Adrian Lopez
 
    Permission is hereby granted, free of charge, to any person
    obtaining a copy of this software and associated documentation files
@@ -82,13 +82,9 @@
 
 /* Windows + Unicode compilation */
 #ifdef UNICODE
-wchar_t wname[PATH_MAX];
-wchar_t wname2[PATH_MAX];
-wchar_t wstr[PATH_MAX];
+wpath_t wname,wname2,wstr;
 int out_mode = _O_TEXT;
 int err_mode = _O_TEXT;
- #define M2W(a,b) MultiByteToWideChar(CP_UTF8, 0, a, -1, (LPWSTR)b, PATH_MAX)
- #define W2M(a,b) WideCharToMultiByte(CP_UTF8, 0, a, -1, (LPSTR)b, PATH_MAX, NULL, NULL)
 #endif /* UNICODE */
 
 #ifndef NO_SYMLINKS
@@ -96,7 +92,7 @@ int err_mode = _O_TEXT;
 #endif
 
 /* Behavior modification flags */
-uint_fast32_t flags = 0;
+uint_fast32_t flags = 0, p_flags = 0;
 
 static const char *program_name;
 
@@ -108,8 +104,10 @@ struct stat s;
 #endif
 
 /* Larger chunk size makes large files process faster but uses more RAM */
+#define MIN_CHUNK_SIZE 4096
+#define MAX_CHUNK_SIZE 16777216
 #ifndef CHUNK_SIZE
- #define CHUNK_SIZE 32768
+ #define CHUNK_SIZE 65536
 #endif
 #ifndef PARTIAL_HASH_SIZE
  #define PARTIAL_HASH_SIZE 4096
@@ -210,17 +208,14 @@ static const char *extensions[] = {
     #ifdef NO_PERMS
     "noperm",
     #endif
+    #ifdef NO_HARDLINKS
+    "nohardlink",
+    #endif
     #ifdef NO_SYMLINKS
     "nosymlink",
     #endif
-    #ifdef USE_TREE_REBALANCE
-    "rebal",
-    #endif
-    #ifdef CONSIDER_IMBALANCE
-    "ci",
-    #endif
-    #ifdef BALANCE_THRESHOLD
-    "bt",
+    #ifdef NO_USER_ORDER
+    "nouserorder",
     #endif
     NULL
 };
@@ -572,7 +567,7 @@ bad_size_suffix:
 
 extern int getdirstats(const char * const restrict name,
         jdupes_ino_t * const restrict inode, dev_t * const restrict dev,
-	jdupes_mode_t * const restrict mode)
+        jdupes_mode_t * const restrict mode)
 {
   if (name == NULL || inode == NULL || dev == NULL) nullptr("getdirstats");
   LOUD(fprintf(stderr, "getdirstats('%s', %p, %p)\n", name, (void *)inode, (void *)dev);)
@@ -606,11 +601,13 @@ extern int check_conditions(const file_t * const restrict file1, const file_t * 
 
   LOUD(fprintf(stderr, "check_conditions('%s', '%s')\n", file1->d_name, file2->d_name);)
 
+#ifndef NO_USER_ORDER
   /* Exclude based on -I/--isolate */
   if (ISFLAG(flags, F_ISOLATE) && (file1->user_order == file2->user_order)) {
     LOUD(fprintf(stderr, "check_conditions: files ignored: parameter isolation\n"));
     return -1;
   }
+#endif /* NO_USER_ORDER */
 
   /* Exclude based on -1/--one-file-system */
   if (ISFLAG(flags, F_ONEFS) && (file1->device != file2->device)) {
@@ -746,7 +743,9 @@ static file_t *init_newfile(const size_t len, file_t * restrict * const restrict
   if (!newfile->d_name) oom("init_newfile() filename");
 
   newfile->next = *filelistp;
+#ifndef NO_USER_ORDER
   newfile->user_order = user_item_count;
+#endif
   newfile->size = -1;
   newfile->duplicates = NULL;
   return newfile;
@@ -888,7 +887,7 @@ static void grokdir(const char * const restrict dir,
   if (!M2W(tempname, wname)) goto error_cd;
 
   LOUD(fprintf(stderr, "FindFirstFile: %s\n", dir));
-  hFind = FindFirstFile((LPCWSTR)wname, &ffd);
+  hFind = FindFirstFileW(wname, &ffd);
   if (hFind == INVALID_HANDLE_VALUE) { LOUD(fprintf(stderr, "\nfile handle bad\n")); goto error_cd; }
   LOUD(fprintf(stderr, "Loop start\n"));
   do {
@@ -1005,7 +1004,7 @@ add_single_file:
   }
 
 #ifdef UNICODE
-  while (FindNextFile(hFind, &ffd) != 0);
+  while (FindNextFileW(hFind, &ffd) != 0);
   FindClose(hFind);
 #else
   closedir(cd);
@@ -1038,7 +1037,7 @@ static jdupes_hash_t *get_filehash(const file_t * const restrict checkfile,
   off_t fsize;
   /* This is an array because we return a pointer to it */
   static jdupes_hash_t hash[1];
-  static jdupes_hash_t chunk[(CHUNK_SIZE / sizeof(jdupes_hash_t))];
+  static jdupes_hash_t *chunk = NULL;
   FILE *file;
   int check = 0;
 #ifdef USE_HASH_XXHASH64
@@ -1047,6 +1046,12 @@ static jdupes_hash_t *get_filehash(const file_t * const restrict checkfile,
 
   if (checkfile == NULL || checkfile->d_name == NULL) nullptr("get_filehash()");
   LOUD(fprintf(stderr, "get_filehash('%s', %" PRIdMAX ")\n", checkfile->d_name, (intmax_t)max_read);)
+
+  /* Allocate on first use */
+  if (chunk == NULL) {
+    chunk = (jdupes_hash_t *)string_malloc(auto_chunk_size);
+    if (!chunk) oom("get_filehash() chunk");
+  }
 
   /* Get the file size. If we can't read it, bail out early */
   if (checkfile->size == -1) {
@@ -1064,8 +1069,7 @@ static jdupes_hash_t *get_filehash(const file_t * const restrict checkfile,
    * If we already hashed the first chunk of this file, we don't want to
    * wastefully read and hash it again, so skip the first chunk and use
    * the computed hash for that chunk as our starting point.
-   *
-   * WARNING: We assume max_read is NEVER less than CHUNK_SIZE here! */
+   */
 
   *hash = 0;
   if (ISFLAG(checkfile->flags, F_HASH_PARTIAL)) {
@@ -1139,7 +1143,7 @@ static jdupes_hash_t *get_filehash(const file_t * const restrict checkfile,
 #ifdef USE_HASH_XXHASH64
   *hash = XXH64_digest(xxhstate);
   XXH64_freeState(xxhstate);
-#endif 
+#endif
   LOUD(fprintf(stderr, "get_filehash: returning hash: 0x%016jx\n", (uintmax_t)*hash));
   return hash;
 }
@@ -1159,49 +1163,7 @@ static inline void registerfile(filetree_t * restrict * const restrict nodeptr,
   branch->file = file;
   branch->left = NULL;
   branch->right = NULL;
-#ifdef USE_TREE_REBALANCE
-  branch->left_weight = 0;
-  branch->right_weight = 0;
 
-  /* Attach the new node to the requested branch and the parent */
-  switch (d) {
-    case LEFT:
-      branch->parent = *nodeptr;
-      (*nodeptr)->left = branch;
-      (*nodeptr)->left_weight++;
-      break;
-    case RIGHT:
-      branch->parent = *nodeptr;
-      (*nodeptr)->right = branch;
-      (*nodeptr)->right_weight++;
-      break;
-    case NONE:
-      /* For the root of the tree only */
-      branch->parent = NULL;
-      *nodeptr = branch;
-      break;
-    default:
-      /* This should never ever happen */
-      fprintf(stderr, "\ninternal error: invalid direction for registerfile(), report this\n");
-      string_malloc_destroy();
-      exit(EXIT_FAILURE);
-      break;
-  }
-
-  /* Propagate weights up the tree */
-  while (branch->parent != NULL) {
-    filetree_t * restrict up;
-
-    up = branch->parent;
-    if (up->left == branch) up->left_weight++;
-    else if (up->right == branch) up->right_weight++;
-    else {
-      fprintf(stderr, "\nInternal error: file tree linkage is broken\n");
-      exit(EXIT_FAILURE);
-    }
-    branch = up;
-  }
-#else /* USE_TREE_REBALANCE */
   /* Attach the new node to the requested branch */
   switch (d) {
     case LEFT:
@@ -1222,107 +1184,8 @@ static inline void registerfile(filetree_t * restrict * const restrict nodeptr,
       break;
   }
 
-#endif /* USE_TREE_REBALANCE */
-
   return;
 }
-
-
-/* Experimental tree rebalance code. This slows things down in testing
- * but may be more useful in the future. Pass -DUSE_TREE_REBALANCE
- * to try it. */
-#ifdef USE_TREE_REBALANCE
-
-/* How much difference to ignore when considering a rebalance */
-#ifndef BALANCE_THRESHOLD
-#define BALANCE_THRESHOLD 4
-#endif
-
-/* Rebalance the file tree to reduce search depth */
-static inline void rebalance_tree(filetree_t * const tree)
-{
-  filetree_t * restrict promote;
-  filetree_t * restrict demote;
-  int difference, direction;
-#ifdef CONSIDER_IMBALANCE
-  int l, r, imbalance;
-#endif
-
-  if (!tree) return;
-
-  /* Rebalance all children first */
-  if (tree->left_weight > BALANCE_THRESHOLD) rebalance_tree(tree->left);
-  if (tree->right_weight > BALANCE_THRESHOLD) rebalance_tree(tree->right);
-
-  /* If weights are within a certain threshold, do nothing */
-  direction = tree->right_weight - tree->left_weight;
-  difference = direction;
-  if (difference < 0) difference = -difference;
-  if (difference <= BALANCE_THRESHOLD) return;
-
-  /* Determine if a tree rotation will help, and do it if so */
-  if (direction > 0) {
-#ifdef CONSIDER_IMBALANCE
-    l = tree->right->left_weight + tree->right_weight;
-    r = tree->right->right_weight;
-    imbalance = l - r;
-    if (imbalance < 0) imbalance = -imbalance;
-    /* Don't rotate if imbalance will increase */
-    if (imbalance >= difference) return;
-#endif /* CONSIDER_IMBALANCE */
-
-    /* Rotate the right node up one level */
-    promote = tree->right;
-    demote = tree;
-    /* Attach new parent's left tree to old parent */
-    demote->right = promote->left;
-    demote->right_weight = promote->left_weight;
-    /* Attach old parent to new parent */
-    promote->left = demote;
-    promote->left_weight = demote->left_weight + demote->right_weight + 1;
-    /* Reconnect parent linkages */
-    promote->parent = demote->parent;
-    if (demote->right) demote->right->parent = demote;
-    demote->parent = promote;
-    if (promote->parent == NULL) checktree = promote;
-    else if (promote->parent->left == demote) promote->parent->left = promote;
-    else promote->parent->right = promote;
-    return;
-  } else if (direction < 0) {
-#ifdef CONSIDER_IMBALANCE
-    r = tree->left->right_weight + tree->left_weight;
-    l = tree->left->left_weight;
-    imbalance = r - l;
-    if (imbalance < 0) imbalance = -imbalance;
-    /* Don't rotate if imbalance will increase */
-    if (imbalance >= difference) return;
-#endif /* CONSIDER_IMBALANCE */
-
-    /* Rotate the left node up one level */
-    promote = tree->left;
-    demote = tree;
-    /* Attach new parent's right tree to old parent */
-    demote->left = promote->right;
-    demote->left_weight = promote->right_weight;
-    /* Attach old parent to new parent */
-    promote->right = demote;
-    promote->right_weight = demote->right_weight + demote->left_weight + 1;
-    /* Reconnect parent linkages */
-    promote->parent = demote->parent;
-    if (demote->left) demote->left->parent = demote;
-    demote->parent = promote;
-    if (promote->parent == NULL) checktree = promote;
-    else if (promote->parent->left == demote) promote->parent->left = promote;
-    else promote->parent->right = promote;
-    return;
-
-  }
-
-  /* Fall through */
-  return;
-}
-
-#endif /* USE_TREE_REBALANCE */
 
 
 #ifdef TREE_DEPTH_STATS
@@ -1361,7 +1224,10 @@ static file_t **checkmatch(filetree_t * restrict tree, file_t * const restrict f
     default: break;
   }
 
-  /* If preliminary matching succeeded, move to full file checks */
+  /* Print pre-check (early) match candidates if requested */
+  if (ISFLAG(p_flags, P_EARLYMATCH)) printf("Early match check passed:\n   %s\n   %s\n\n", file->d_name, tree->file->d_name);
+
+  /* If preliminary matching succeeded, do main file data checks */
   if (cmpresult == 0) {
     LOUD(fprintf(stderr, "checkmatch: starting file data comparisons\n"));
     /* Attempt to exclude files quickly with partial file hashing */
@@ -1417,6 +1283,9 @@ static file_t **checkmatch(filetree_t * restrict tree, file_t * const restrict f
         SETFLAG(file->flags, F_HASH_FULL);
       }
 
+      /* Print partial hash matching pairs if requested */
+      if (ISFLAG(p_flags, P_PARTIAL)) printf("Partial hashes match:\n   %s\n   %s\n\n", file->d_name, tree->file->d_name);
+
       /* Full file hash comparison */
       cmpresult = HASH_COMPARE(file->filehash, tree->file->filehash);
       LOUD(if (!cmpresult) fprintf(stderr, "checkmatch: full hashes match\n"));
@@ -1454,6 +1323,7 @@ static file_t **checkmatch(filetree_t * restrict tree, file_t * const restrict f
     DBG(partial_to_full++;)
     TREE_DEPTH_UPDATE_MAX();
     LOUD(fprintf(stderr, "checkmatch: files appear to match based on hashes\n"));
+    if (ISFLAG(p_flags, P_FULLHASH)) printf("Full hashes match:\n   %s\n   %s\n\n", file->d_name, tree->file->d_name);
     return &tree->file;
   }
   /* Fall through - should never be reached */
@@ -1465,13 +1335,20 @@ static file_t **checkmatch(filetree_t * restrict tree, file_t * const restrict f
    same signature. Unlikely, but better safe than sorry. */
 static inline int confirmmatch(FILE * const restrict file1, FILE * const restrict file2, off_t size)
 {
-  static char c1[CHUNK_SIZE], c2[CHUNK_SIZE];
+  static char *c1 = NULL, *c2 = NULL;
   size_t r1, r2;
   off_t bytes = 0;
   int check = 0;
 
   if (file1 == NULL || file2 == NULL) nullptr("confirmmatch()");
   LOUD(fprintf(stderr, "confirmmatch running\n"));
+
+  /* Allocate on first use; OOM if either is ever NULLed */
+  if (!c1) {
+    c1 = (char *)string_malloc(auto_chunk_size);
+    c2 = (char *)string_malloc(auto_chunk_size);
+  }
+  if (!c1 || !c2) oom("confirmmatch() c1/c2");
 
   fseek(file1, 0, SEEK_SET);
   fseek(file2, 0, SEEK_SET);
@@ -1527,6 +1404,7 @@ extern unsigned int get_max_dupes(const file_t *files, unsigned int * const rest
 }
 
 
+#ifndef NO_USER_ORDER
 static int sort_pairs_by_param_order(file_t *f1, file_t *f2)
 {
   if (!ISFLAG(flags, F_USEPARAMORDER)) return 0;
@@ -1535,14 +1413,17 @@ static int sort_pairs_by_param_order(file_t *f1, file_t *f2)
   if (f1->user_order > f2->user_order) return sort_direction;
   return 0;
 }
+#endif
 
 
 static int sort_pairs_by_mtime(file_t *f1, file_t *f2)
 {
   if (f1 == NULL || f2 == NULL) nullptr("sort_pairs_by_mtime()");
-  int po = sort_pairs_by_param_order(f1, f2);
 
+#ifndef NO_USER_ORDER
+  int po = sort_pairs_by_param_order(f1, f2);
   if (po != 0) return po;
+#endif /* NO_USER_ORDER */
 
   if (f1->mtime < f2->mtime) return -sort_direction;
   else if (f1->mtime > f2->mtime) return sort_direction;
@@ -1554,9 +1435,11 @@ static int sort_pairs_by_mtime(file_t *f1, file_t *f2)
 static int sort_pairs_by_filename(file_t *f1, file_t *f2)
 {
   if (f1 == NULL || f2 == NULL) nullptr("sort_pairs_by_filename()");
-  int po = sort_pairs_by_param_order(f1, f2);
 
+#ifndef NO_USER_ORDER
+  int po = sort_pairs_by_param_order(f1, f2);
   if (po != 0) return po;
+#endif /* NO_USER_ORDER */
 
   return numeric_sort(f1->d_name, f2->d_name, sort_direction);
 }
@@ -1614,11 +1497,13 @@ static inline void help_text(void)
 #ifdef LOUD
   printf(" -@ --loud        \toutput annoying low-level debug info while running\n");
 #endif
+  printf(" -0 --printnull   \toutput nulls instead of CR/LF (like 'find -print0')\n");
   printf(" -1 --one-file-system \tdo not match files on different filesystems/devices\n");
   printf(" -A --nohidden    \texclude hidden files from consideration\n");
 #ifdef ENABLE_BTRFS
-  printf(" -B --dedupe      \tSend matches to btrfs for block-level deduplication\n");
+  printf(" -B --dedupe      \tsend matches to btrfs for block-level deduplication\n");
 #endif
+  printf(" -C --chunksize=# \toverride I/O chunk size (min %d, max %d)\n", MIN_CHUNK_SIZE, MAX_CHUNK_SIZE);
   printf(" -d --delete      \tprompt user for files to preserve and delete all\n");
   printf("                  \tothers; important: under particular circumstances,\n");
   printf("                  \tdata may be lost when using this option together\n");
@@ -1635,7 +1520,9 @@ static inline void help_text(void)
   printf("                  \tlinked files are treated as non-duplicates for safety\n");
 #endif
   printf(" -i --reverse     \treverse (invert) the match sort order\n");
+#ifndef NO_USER_ORDER
   printf(" -I --isolate     \tfiles in the same specified directory won't match\n");
+#endif
 #ifndef NO_SYMLINKS
   printf(" -l --linksoft    \tmake relative symlinks for duplicates w/o prompting\n");
 #endif
@@ -1651,12 +1538,15 @@ static inline void help_text(void)
   printf("                  \teach set of duplicates and delete the rest without\n");
   printf("                  \tprompting the user\n");
   printf(" -o --order=BY    \tselect sort order for output, linking and deleting; by\n");
+#ifndef NO_USER_ORDER
   printf(" -O --paramorder  \tParameter order is more important than selected -O sort\n");
   printf("                  \tmtime (BY=time) or filename (BY=name, the default)\n");
+#endif
 #ifndef NO_PERMS
   printf(" -p --permissions \tdon't consider files with different owner/group or\n");
   printf("                  \tpermission bits as duplicates\n");
 #endif
+  printf(" -P --print=type  \tprint extra info (partial, early, fullhash)\n");
   printf(" -Q --quick       \tskip byte-for-byte confirmation for quick matching\n");
   printf("                  \tWARNING: -Q can result in data loss! Be very careful!\n");
   printf(" -r --recurse     \tfor every directory, process its subdirectories too\n");
@@ -1701,6 +1591,7 @@ int main(int argc, char **argv)
   static int opt;
   static int pm = 1;
   static ordertype_t ordertype = ORDER_NAME;
+  static long manual_chunk_size = 0;
 #ifndef ON_WINDOWS
   static struct proc_cacheinfo pci;
 #endif
@@ -1709,9 +1600,11 @@ int main(int argc, char **argv)
   static const struct option long_options[] =
   {
     { "loud", 0, 0, '@' },
+    { "printnull", 0, 0, '0' },
     { "one-file-system", 0, 0, '1' },
     { "nohidden", 0, 0, 'A' },
     { "dedupe", 0, 0, 'B' },
+    { "chunksize", 1, 0, 'C' },
     { "delete", 0, 0, 'd' },
     { "debug", 0, 0, 'D' },
     { "omitfirst", 0, 0, 'f' },
@@ -1728,6 +1621,7 @@ int main(int argc, char **argv)
     { "order", 1, 0, 'o' },
     { "paramorder", 0, 0, 'O' },
     { "permissions", 0, 0, 'p' },
+    { "print", 0, 0, 'P' },
     { "quiet", 0, 0, 'q' },
     { "quick", 0, 0, 'Q' },
     { "recurse", 0, 0, 'r' },
@@ -1775,7 +1669,7 @@ int main(int argc, char **argv)
   if (pci.l1 != 0) auto_chunk_size = (pci.l1 / 2);
   else if (pci.l1d != 0) auto_chunk_size = (pci.l1d / 2);
   /* Must be at least 4096 (4 KiB) and cannot exceed CHUNK_SIZE */
-  if (auto_chunk_size < 4096 || auto_chunk_size > CHUNK_SIZE) auto_chunk_size = CHUNK_SIZE;
+  if (auto_chunk_size < MIN_CHUNK_SIZE || auto_chunk_size > MAX_CHUNK_SIZE) auto_chunk_size = CHUNK_SIZE;
   /* Force to a multiple of 4096 if it isn't already */
   if ((auto_chunk_size & 0x00000fffUL) != 0)
     auto_chunk_size = (auto_chunk_size + 0x00000fffUL) & 0x000ff000;
@@ -1786,17 +1680,29 @@ int main(int argc, char **argv)
   oldargv = cloneargs(argc, argv);
 
   while ((opt = GETOPT(argc, argv,
-  "@1ABdDfhHiIlLmnNOpqQrRsSvzZo:x:X:"
+  "@01ABC:dDfhHiIlLmnNOpP:qQrRsSvzZo:x:X:"
 #ifndef OMIT_GETOPT_LONG
           , long_options, NULL
 #endif
          )) != EOF) {
     switch (opt) {
+    case '0':
+      SETFLAG(flags, F_PRINTNULL);
+      break;
     case '1':
       SETFLAG(flags, F_ONEFS);
       break;
     case 'A':
       SETFLAG(flags, F_EXCLUDEHIDDEN);
+      break;
+    case 'C':
+      manual_chunk_size = strtol(optarg, NULL, 10) & 0x0ffff000L;  /* Align to 4K sizes */
+      if (manual_chunk_size < MIN_CHUNK_SIZE || manual_chunk_size > MAX_CHUNK_SIZE) {
+        fprintf(stderr, "warning: invalid manual chunk size (must be %d-%d); using defaults\n", MIN_CHUNK_SIZE, MAX_CHUNK_SIZE);
+        LOUD(fprintf(stderr, "Manual chunk size (failed) was apparently '%s' => %ld\n", optarg, manual_chunk_size));
+        manual_chunk_size = 0;
+      } else auto_chunk_size = (size_t)manual_chunk_size;
+      LOUD(fprintf(stderr, "Manual chunk size is %ld\n", manual_chunk_size));
       break;
     case 'd':
       SETFLAG(flags, F_DELETEFILES);
@@ -1824,9 +1730,19 @@ int main(int argc, char **argv)
     case 'i':
       SETFLAG(flags, F_REVERSESORT);
       break;
+#ifndef NO_USER_ORDER
     case 'I':
       SETFLAG(flags, F_ISOLATE);
       break;
+    case 'O':
+      SETFLAG(flags, F_USEPARAMORDER);
+      break;
+#else
+    case 'I':
+    case 'O':
+      fprintf(stderr, "warning: -I and -O are disabled and ignored in this build\n");
+      break;
+#endif
     case 'm':
       SETFLAG(flags, F_SUMMARIZEMATCHES);
       break;
@@ -1836,11 +1752,17 @@ int main(int argc, char **argv)
     case 'N':
       SETFLAG(flags, F_NOPROMPT);
       break;
-    case 'O':
-      SETFLAG(flags, F_USEPARAMORDER);
-      break;
     case 'p':
       SETFLAG(flags, F_PERMISSIONS);
+      break;
+    case 'P':
+      if (strcmp(optarg, "partial") == 0) SETFLAG(p_flags, P_PARTIAL);
+      else if (strcmp(optarg, "early") == 0) SETFLAG(p_flags, P_EARLYMATCH);
+      else if (strcmp(optarg, "fullhash") == 0) SETFLAG(p_flags, P_FULLHASH);
+      else {
+        fprintf(stderr, "Option '%s' is not valid for -P\n", optarg);
+	exit(EXIT_FAILURE);
+      }
       break;
     case 'q':
       SETFLAG(flags, F_HIDEPROGRESS);
@@ -1915,7 +1837,7 @@ int main(int argc, char **argv)
           c++;
         }
       } else printf(" none");
-      printf("\nCopyright (C) 2015-2017 by Jody Bruchon\n");
+      printf("\nCopyright (C) 2015-2018 by Jody Bruchon\n");
       printf("\nPermission is hereby granted, free of charge, to any person\n");
       printf("obtaining a copy of this software and associated documentation files\n");
       printf("(the \"Software\"), to deal in the Software without restriction,\n");
@@ -2053,9 +1975,6 @@ int main(int argc, char **argv)
     static file_t **match = NULL;
     static FILE *file1;
     static FILE *file2;
-#ifdef USE_TREE_REBALANCE
-    static unsigned int depth_threshold = INITIAL_DEPTH_THRESHOLD;
-#endif
 
     if (interrupt) {
       fprintf(stderr, "\nStopping file scan due to user abort\n");
@@ -2068,16 +1987,6 @@ int main(int argc, char **argv)
 
     if (!checktree) registerfile(&checktree, NONE, curfile);
     else match = checkmatch(checktree, curfile);
-
-#ifdef USE_TREE_REBALANCE
-    /* Rebalance the match tree after a certain number of files processed */
-    if (max_depth > depth_threshold) {
-      rebalance_tree(checktree);
-      max_depth = 0;
-      if (depth_threshold < 512) depth_threshold <<= 1;
-      else depth_threshold += 64;
-    }
-#endif /* USE_TREE_REBALANCE */
 
     /* Byte-for-byte check that a matched pair are actually matched */
     if (match != NULL) {
@@ -2170,13 +2079,16 @@ skip_file_scan:
         left_branch + right_branch, max_depth);
     fprintf(stderr, "SMA: allocs %" PRIuMAX ", free %" PRIuMAX " (merge %" PRIuMAX ", repl %" PRIuMAX "), fail %" PRIuMAX ", reuse %" PRIuMAX ", scan %" PRIuMAX ", tails %" PRIuMAX "\n",
         sma_allocs, sma_free_good, sma_free_merged, sma_free_replaced,
-	sma_free_ignored, sma_free_reclaimed,
+        sma_free_ignored, sma_free_reclaimed,
         sma_free_scanned, sma_free_tails);
+    if (manual_chunk_size > 0) fprintf(stderr, "I/O chunk size: %ld KiB (manually set)\n", manual_chunk_size >> 10);
+    else {
 #ifndef ON_WINDOWS
-    fprintf(stderr, "I/O chunk size: %" PRIuMAX " KiB (%s)\n", (uintmax_t)(auto_chunk_size >> 10), (pci.l1 + pci.l1d) != 0 ? "dynamically sized" : "default size");
+      fprintf(stderr, "I/O chunk size: %" PRIuMAX " KiB (%s)\n", (uintmax_t)(auto_chunk_size >> 10), (pci.l1 + pci.l1d) != 0 ? "dynamically sized" : "default size");
 #else
-    fprintf(stderr, "I/O chunk size: %" PRIuMAX " KiB (default size)\n", (uintmax_t)(auto_chunk_size >> 10));
+      fprintf(stderr, "I/O chunk size: %" PRIuMAX " KiB (default size)\n", (uintmax_t)(auto_chunk_size >> 10));
 #endif
+    }
 #ifdef ON_WINDOWS
  #ifndef NO_HARDLINKS
     if (ISFLAG(flags, F_HARDLINKFILES))

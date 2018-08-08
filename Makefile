@@ -86,22 +86,19 @@ ifeq ($(OS), Windows_NT)
 	COMPILER_OPTIONS += -municode
 endif
 COMPILER_OPTIONS += -D__USE_MINGW_ANSI_STDIO=1 -DON_WINDOWS=1
-OBJS += win_stat.o
+	OBJS += win_stat.o winres.o
 override undefine ENABLE_BTRFS
-override undefine HAVE_BTRFS_IOCTL_H
 endif
 
 # xxHash support
 ifdef USE_XXHASH
 	COMPILER_OPTIONS += -DUSE_HASH_XXHASH64
 	OBJS += xxhash.o
+OBJS_CLEAN += jody_hash.o
 else
 	COMPILER_OPTIONS += -DUSE_HASH_JODYHASH
 	OBJS += jody_hash.o
-endif
-# Remap old BTRFS support option to new name
-ifdef HAVE_BTRFS_IOCTL_H
-	ENABLE_BTRFS=1
+OBJS_CLEAN += xxhash.o
 endif
 # New BTRFS support option
 ifdef ENABLE_BTRFS
@@ -112,7 +109,7 @@ else
 endif
 # Low memory mode
 ifdef LOW_MEMORY
-	COMPILER_OPTIONS += -DLOW_MEMORY -DJODY_HASH_WIDTH=32 -DSMA_PAGE_SIZE=32768
+COMPILER_OPTIONS += -DLOW_MEMORY -DJODY_HASH_WIDTH=32 -DSMA_PAGE_SIZE=32768 -DCHUNK_SIZE=16384 -DNO_HARDLINKS -DNO_USER_ORDER
 endif
 
 CFLAGS += $(COMPILER_OPTIONS) $(CFLAGS_EXTRA)
@@ -129,10 +126,13 @@ OBJS += jody_cacheinfo.o
 OBJS += act_deletefiles.o act_linkfiles.o act_printmatches.o act_summarize.o
 OBJS += $(ADDITIONAL_OBJECTS)
 
-all: jdupes
+all: $(PROGRAM_NAME)
 
-jdupes: $(OBJS)
+$(PROGRAM_NAME): $(OBJS)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $(PROGRAM_NAME) $(OBJS)
+
+winres.o : winres.rc winres.manifest.xml
+	windres winres.rc winres.o
 
 installdirs:
 	test -e $(DESTDIR)$(BIN_DIR) || $(MKDIR) $(DESTDIR)$(BIN_DIR)
