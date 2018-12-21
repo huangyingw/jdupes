@@ -45,6 +45,7 @@ MAN_EXT = 1
 INSTALL = install	# install : UCB/GNU Install compatiable
 #INSTALL = ginstall
 RM      = rm -f
+RMDIR	= rmdir -p
 MKDIR   = mkdir -p
 #MKDIR   = mkdirhier
 #MKDIR   = mkinstalldirs
@@ -125,6 +126,8 @@ OBJS += act_deletefiles.o act_linkfiles.o act_printmatches.o act_summarize.o
 OBJS += xxhash.o
 OBJS += $(ADDITIONAL_OBJECTS)
 
+OBJS_CLEAN += jdupes-standalone
+
 all: $(PROGRAM_NAME)
 
 $(PROGRAM_NAME): $(OBJS)
@@ -133,6 +136,8 @@ $(PROGRAM_NAME): $(OBJS)
 winres.o : winres.rc winres.manifest.xml
 	windres winres.rc winres.o
 
+standalone: jdupes-standalone
+
 installdirs:
 	test -e $(DESTDIR)$(BIN_DIR) || $(MKDIR) $(DESTDIR)$(BIN_DIR)
 	test -e $(DESTDIR)$(MAN_DIR) || $(MKDIR) $(DESTDIR)$(MAN_DIR)
@@ -140,6 +145,14 @@ installdirs:
 install: $(PROGRAM_NAME) installdirs
 	$(INSTALL_PROGRAM)	$(PROGRAM_NAME)   $(DESTDIR)$(BIN_DIR)/$(PROGRAM_NAME)
 	$(INSTALL_DATA)		$(PROGRAM_NAME).1 $(DESTDIR)$(MAN_DIR)/$(PROGRAM_NAME).$(MAN_EXT)
+
+uninstalldirs:
+	-test -e $(DESTDIR)$(BIN_DIR) && $(RMDIR) $(DESTDIR)$(BIN_DIR)
+	-test -e $(DESTDIR)$(MAN_DIR) && $(RMDIR) $(DESTDIR)$(MAN_DIR)
+
+uninstall: uninstalldirs
+	$(RM)	$(DESTDIR)$(BIN_DIR)/$(PROGRAM_NAME)
+	$(RM)	$(DESTDIR)$(MAN_DIR)/$(PROGRAM_NAME).$(MAN_EXT)
 
 test:
 	./test.sh
