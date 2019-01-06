@@ -45,6 +45,7 @@ MAN_EXT = 1
 INSTALL = install	# install : UCB/GNU Install compatiable
 #INSTALL = ginstall
 RM      = rm -f
+RMDIR	= rmdir -p
 MKDIR   = mkdir -p
 #MKDIR   = mkdirhier
 #MKDIR   = mkinstalldirs
@@ -58,6 +59,13 @@ COMPILER_OPTIONS += -std=gnu99 -O2 -g -D_FILE_OFFSET_BITS=64 -fstrict-aliasing -
 #####################################################################
 # no need to modify anything beyond this point                      #
 #####################################################################
+
+# Set built-on date for display in program version info screen
+ifdef EMBED_BUILD_DATE
+BD=$(shell date +"\"%Y-%m-%d %H:%M:%S %z\"")
+$(shell echo "#define BUILT_ON_DATE \"$(BD)\"" > build_date.h)
+COMPILER_OPTIONS += -DBUILD_DATE
+endif
 
 # Debugging code inclusion
 ifdef LOUD
@@ -118,6 +126,8 @@ OBJS += act_deletefiles.o act_linkfiles.o act_printmatches.o act_summarize.o
 OBJS += xxhash.o
 OBJS += $(ADDITIONAL_OBJECTS)
 
+OBJS_CLEAN += jdupes-standalone
+
 all: $(PROGRAM_NAME)
 
 $(PROGRAM_NAME): $(OBJS)
@@ -125,6 +135,8 @@ $(PROGRAM_NAME): $(OBJS)
 
 winres.o : winres.rc winres.manifest.xml
 	windres winres.rc winres.o
+
+standalone: jdupes-standalone
 
 installdirs:
 	test -e $(DESTDIR)$(BIN_DIR) || $(MKDIR) $(DESTDIR)$(BIN_DIR)
@@ -134,6 +146,14 @@ install: $(PROGRAM_NAME) installdirs
 	$(INSTALL_PROGRAM)	$(PROGRAM_NAME)   $(DESTDIR)$(BIN_DIR)/$(PROGRAM_NAME)
 	$(INSTALL_DATA)		$(PROGRAM_NAME).1 $(DESTDIR)$(MAN_DIR)/$(PROGRAM_NAME).$(MAN_EXT)
 
+uninstalldirs:
+	-test -e $(DESTDIR)$(BIN_DIR) && $(RMDIR) $(DESTDIR)$(BIN_DIR)
+	-test -e $(DESTDIR)$(MAN_DIR) && $(RMDIR) $(DESTDIR)$(MAN_DIR)
+
+uninstall: uninstalldirs
+	$(RM)	$(DESTDIR)$(BIN_DIR)/$(PROGRAM_NAME)
+	$(RM)	$(DESTDIR)$(MAN_DIR)/$(PROGRAM_NAME).$(MAN_EXT)
+
 test:
 	./test.sh
 
@@ -141,7 +161,7 @@ stripped: $(PROGRAM_NAME)
 	strip $(PROGRAM_NAME)$(PROGRAM_SUFFIX)
 
 clean:
-	$(RM) $(OBJS) $(OBJS_CLEAN) $(PROGRAM_NAME) $(PROGRAM_NAME).exe *~ *.gcno *.gcda *.gcov
+	$(RM) $(OBJS) $(OBJS_CLEAN) build_date.h $(PROGRAM_NAME) $(PROGRAM_NAME).exe *~ *.gcno *.gcda *.gcov
 
 distclean: clean
 	$(RM) *.pkg.tar.xz

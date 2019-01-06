@@ -116,9 +116,6 @@ extern "C" {
 #endif
 
 
-/* How many operations to wait before updating progress counters */
-#define DELAY_COUNT 256
-
 /* Behavior modification flags */
 extern uint_fast32_t flags;
 #define F_RECURSE		0x00000001U
@@ -146,6 +143,7 @@ extern uint_fast32_t flags;
 #define F_PRINTMATCHES		0x00400000U
 #define F_ONEFS			0x00800000U
 #define F_PRINTNULL		0x01000000U
+#define F_PARTIALONLY		0x02000000U
 
 #define F_LOUD			0x40000000U
 #define F_DEBUG			0x80000000U
@@ -180,9 +178,6 @@ typedef enum {
 #ifndef PATHBUF_SIZE
 #define PATHBUF_SIZE 4096
 #endif
-
-/* For interactive deletion input */
-#define INPUT_SIZE 512
 
 /* Per-file information */
 typedef struct _file {
@@ -268,7 +263,7 @@ struct size_suffix {
 };
 
 extern const struct size_suffix size_suffix[];
-
+extern char tempname[PATHBUF_SIZE * 2];
 
 extern void oom(const char * const restrict msg);
 extern void nullptr(const char * restrict func);
