@@ -35,12 +35,20 @@ NO_HARDLINKS           Disable hard linking options and code
 NO_SYMLINKS            Disable symbolic linking options and code
 NO_USER_ORDER          Disable -I/-O options and code
 NO_UNICODE             [Windows only] disable all Unicode support
+EMBED_BUILD_DATE       Hard-code the build date into the binary
 
 The LOW_MEMORY option tweaks various knobs in the program to lower total
 memory usage. It also disables some features to reduce the size of certain
 data structures. The improvements in memory usage are not very large, but if
 you're running in a very RAM-limited environment or have a CPU with very small
 caches it may be a good choice.
+
+If you are building binaries that will have the same version number and still
+need a way to differentiate the binaries, you can use EMBED_BUILD_DATE to add
+the date of the build to the version info in 'jdupes -v'. Note that you must
+have a build that will rebuild jdupes.c (such as after a 'make clean') for
+the shown build date to actually update. This option also makes it impossible
+to create reproducible builds if that's important to you.
 
 A test directory is included so that you may familiarize yourself with the way
 jdupes operates. You may test the program before installing it by issuing a
@@ -56,3 +64,20 @@ all. To use it, type:
 
 ./compare_jdupes.sh [options]
 
+A stand-alone version of jdupes that consolidates most of the program's
+functionality into a single C file is included with this source code. Major
+differences include reduction or elimination of some text strings, using an
+embedded 32-bit jody_hash implementation instead of relying on xxHash64,
+removal of all DEBUG/LOUD and Windows support code, replacement of fancy
+numeric sorting with the faster but naive strcmp() sort method, and other
+minor adjustments and consolidations appropriate for single-file compilation.
+This version of the program is suitable for inclusion in "Swiss army knife"
+projects such as BusyBox and Toybox.
+
+The standalone version is not meant to work on Windows; it has all of the
+quirks for Windows support stripped out and there's no real advantage to
+using it on Windows anyway. However, if you need added stress in your life
+and you understand that this is NOT SUPPORTED and YOU'RE 100% ON YOUR OWN,
+you can compile it with this make command and it'll even partially work:
+
+make standalone NO_UNICODE=1 CFLAGS_EXTRA='-DNO_PERMS -DNO_SYMLINKS -DNO_HARDLINKS'

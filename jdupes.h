@@ -8,18 +8,6 @@
 extern "C" {
 #endif
 
-/* Select hash algorithm */
-//#define USE_HASH_JODYHASH /* jodyhash */
-//#define USE_HASH_XXHASH64 /* xxHash64 */
-
-/* Failsafes */
-#if !defined USE_HASH_JODYHASH && !defined USE_HASH_XXHASH64
-#define USE_HASH_JODYHASH
-#endif
-#if defined USE_HASH_JODYHASH && defined USE_HASH_XXHASH64
-#error Multiple USE_HASH options
-#endif
-
 /* Detect Windows and modify as needed */
 #if defined _WIN32 || defined __CYGWIN__
  #ifndef ON_WINDOWS
@@ -46,13 +34,7 @@ extern "C" {
 #include "jody_sort.h"
 #include "version.h"
 
-/* Configure hash function based on choice above */
-#if defined USE_HASH_JODYHASH
- #define JODY_HASH_NOCOMPAT
- #include "jody_hash.h"
-#elif defined USE_HASH_XXHASH64
- #include "xxhash.h"
-#endif
+#include "xxhash.h"
 
 /* Optional btrfs support */
 #ifdef ENABLE_BTRFS
@@ -61,11 +43,7 @@ extern "C" {
 #endif
 
 /* Set hash type (change this if swapping in a different hash function) */
-#if defined USE_HASH_JODYHASH
- typedef jodyhash_t jdupes_hash_t;
-#elif defined USE_HASH_XXHASH64
  typedef XXH64_hash_t jdupes_hash_t;
-#endif
 
 /* Some types are different on Windows */
 #ifdef ON_WINDOWS
@@ -138,9 +116,6 @@ extern "C" {
 #endif
 
 
-/* How many operations to wait before updating progress counters */
-#define DELAY_COUNT 256
-
 /* Behavior modification flags */
 extern uint_fast32_t flags;
 #define F_RECURSE		0x00000001U
@@ -168,6 +143,7 @@ extern uint_fast32_t flags;
 #define F_PRINTMATCHES		0x00400000U
 #define F_ONEFS			0x00800000U
 #define F_PRINTNULL		0x01000000U
+#define F_PARTIALONLY		0x02000000U
 
 #define F_LOUD			0x40000000U
 #define F_DEBUG			0x80000000U
@@ -202,9 +178,6 @@ typedef enum {
 #ifndef PATHBUF_SIZE
 #define PATHBUF_SIZE 4096
 #endif
-
-/* For interactive deletion input */
-#define INPUT_SIZE 512
 
 /* Per-file information */
 typedef struct _file {
@@ -290,7 +263,7 @@ struct size_suffix {
 };
 
 extern const struct size_suffix size_suffix[];
-
+extern char tempname[PATHBUF_SIZE * 2];
 
 extern void oom(const char * const restrict msg);
 extern void nullptr(const char * restrict func);
