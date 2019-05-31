@@ -2,7 +2,8 @@
     url = https://github.com/jbruchon/jdupes.git
     fetch = +refs/heads/*:refs/remotes/jbruchon/*
 [gsync]
-    remote = jbruchon/master
+    remote = jbruchon
+    branch = master
 [push]
     remote = origin
 [branch "master"]
