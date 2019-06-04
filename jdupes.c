@@ -552,6 +552,7 @@ bad_size_suffix:
 }
 
 
+/* Returns -1 if stat() fails, 0 if it's a directory, 1 if it's not */
 extern int getdirstats(const char * const restrict name,
         jdupes_ino_t * const restrict inode, dev_t * const restrict dev,
         jdupes_mode_t * const restrict mode)
@@ -759,6 +760,17 @@ static struct travdone *travdone_alloc(const jdupes_ino_t inode, const dev_t dev
 }
 
 
+/* De-allocate the travdone tree */
+static void travdone_free(struct travdone * const restrict cur)
+{
+  if (cur == NULL) return;
+  if (cur->left != NULL) travdone_free(cur->left);
+  if (cur->left != NULL) travdone_free(cur->right);
+  string_free(cur);
+  return;
+}
+
+
 /* Add a single file to the file tree */
 static inline file_t *grokfile(const char * const restrict name, file_t * restrict * const restrict filelistp)
 {
@@ -794,7 +806,7 @@ static void grokdir(const char * const restrict dir,
   size_t dirlen;
   struct travdone *traverse;
   int i, single = 0;
-  jdupes_ino_t inode, n_inode;
+  jdupes_ino_t inode;
   dev_t device, n_device;
   jdupes_mode_t mode;
 #ifdef UNICODE
@@ -936,9 +948,9 @@ static void grokdir(const char * const restrict dir,
     /* Optionally recurse directories, including symlinked ones if requested */
     if (S_ISDIR(newfile->mode)) {
       if (recurse) {
-        /* --one-file-system */
+        /* --one-file-system - WARNING: this clobbers inode/mode */
         if (ISFLAG(flags, F_ONEFS)
-            && (getdirstats(newfile->d_name, &n_inode, &n_device, &mode) == 0)
+            && (getdirstats(newfile->d_name, &inode, &n_device, &mode) == 0)
             && (device != n_device)) {
           LOUD(fprintf(stderr, "grokdir: directory: not recursing (--one-file-system)\n"));
           string_free(newfile->d_name);
@@ -1017,7 +1029,7 @@ error_overflow:
 }
 
 
-/* Use Jody Bruchon's hash function on part or all of a file */
+/* Hash part or all of a file */
 static jdupes_hash_t *get_filehash(const file_t * const restrict checkfile,
                 const size_t max_read)
 {
@@ -1986,10 +1998,14 @@ int main(int argc, char **argv)
     }
   }
 
+  /* We don't need the double traversal check tree anymore */
+  travdone_free(travdone_head);
+
   if (ISFLAG(flags, F_REVERSESORT)) sort_direction = -1;
   if (!ISFLAG(flags, F_HIDEPROGRESS)) fprintf(stderr, "\n");
   if (!files) {
     fwprint(stderr, "No duplicates found.", 1);
+    string_malloc_destroy();
     exit(EXIT_SUCCESS);
   }
 
