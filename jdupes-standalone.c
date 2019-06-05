@@ -20,6 +20,9 @@
    TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
    SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE. */
 
+#define VER "1.13"
+#define VERDATE "2019-06-04"
+
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -84,6 +87,7 @@ typedef mode_t jdupes_mode_t;
 #define F_PRINTNULL		0x01000000U
 #define F_PARTIALONLY		0x02000000U
 #define F_NO_TOCTTOU		0x04000000U
+#define F_PRINTJSON		0x08000000U
 
 /* Per-file true/false flags */
 #define F_VALID_STAT		0x00000001U
@@ -314,7 +318,7 @@ static void nullptr(const char * restrict func)
 
 
 /* Jody Bruchon's fast hashing function
- * Copyright (C) 2014-2017 by Jody Bruchon <jody@jodybruchon.com>
+ * Copyright (C) 2014-2019 by Jody Bruchon <jody@jodybruchon.com>
  * Released under The MIT License
  */
 
@@ -543,12 +547,12 @@ static void add_exclude(const char *option)
   if (exclude_head != NULL) {
     /* Add to end of exclusion stack if head is present */
     while (excl->next != NULL) excl = excl->next;
-    excl->next = malloc(sizeof(struct exclude) + strlen(p));
+    excl->next = malloc(sizeof(struct exclude) + strlen(p) + 1);
     if (excl->next == NULL) oom("add_exclude alloc");
     excl = excl->next;
   } else {
     /* Allocate exclude_head if no exclusions exist yet */
-    exclude_head = malloc(sizeof(struct exclude) + strlen(p));
+    exclude_head = malloc(sizeof(struct exclude) + strlen(p) + 1);
     if (exclude_head == NULL) oom("add_exclude alloc");
     excl = exclude_head;
   }
@@ -573,7 +577,8 @@ static void add_exclude(const char *option)
   } else {
     /* Exclude uses string data; just copy it */
     excl->size = 0;
-    strcpy(excl->param, p);
+    if (*p != '\0') strcpy(excl->param, p);
+    else *(excl->param) = '\0';
   }
 
   free(opt);
@@ -728,6 +733,17 @@ static struct travdone *travdone_alloc(const jdupes_ino_t inode, const dev_t dev
   trav->inode = inode;
   trav->device = device;
   return trav;
+}
+
+
+/* De-allocate the travdone tree */
+static void travdone_free(struct travdone * const restrict cur)
+{
+  if (cur == NULL) return;
+  if (cur->left != NULL) travdone_free(cur->left);
+  if (cur->left != NULL) travdone_free(cur->right);
+  free(cur);
+  return;
 }
 
 
@@ -1266,6 +1282,91 @@ static int fwprint(FILE * const restrict stream, const char * const restrict str
   else return fprintf(stream, "%s%s", str, cr == 1 ? "\n" : "");		
 }
 
+
+/* Print comprehensive information to stdout in JSON format */
+#define TO_HEX(a) (char)(((a) & 0x0f) <= 0x09 ? (a) + 0x30 : (a) + 0x57)
+
+static void json_escape(char *string, char *escaped)
+{
+  int length = 0;
+  while (*string != '\0' && length < (PATH_MAX * 2 - 1)) {
+    switch (*string) {
+      case '\"':
+      case '\\':
+        *escaped++ = '\\';
+        *escaped++ = *string++;
+        length += 2;
+        break;
+      default:
+	if (*string < 0x20) {
+	  strcpy(escaped, "\\u00");
+	  escaped += 3;
+	  *escaped++ = TO_HEX((*string >> 4));
+	  *escaped++ = TO_HEX(*string++);
+	  length += 5;
+	} else {
+          *escaped++ = *string++;
+          length++;
+	}
+        break;
+    }
+  }
+  *escaped = '\0';
+  return;
+}
+
+extern void printjson(file_t * restrict files, const int argc, char **argv)
+{
+  file_t * restrict tmpfile;
+  int arg = 0, comma = 0;
+  char *temp = malloc(PATH_MAX * 2);
+  char *temp2 = malloc(PATH_MAX * 2);
+  char *temp_insert = temp;
+
+  /* Output information about the jdupes command environment */
+  printf("{\n  \"jdupesVersion\": \"%s\",\n  \"jdupesVersionDate\": \"%s\",\n", VER, VERDATE);
+  
+  printf("  \"commandLine\": \"");
+  while (arg < argc) {
+    sprintf(temp_insert, " %s", argv[arg]);
+    temp_insert += strlen(temp_insert);
+    arg++;
+  }
+  json_escape(temp, temp2);
+  printf("%s\",\n", temp2);
+  printf("  \"extensionFlags\": \"standalone\",\n");
+
+  printf("  \"matchSets\": [\n");
+  while (files != NULL) {
+    if (ISFLAG(files->flags, F_HAS_DUPES)) {
+      if (comma) printf(",\n");
+      printf("    {\n      \"fileSize\": %" PRIdMAX ",\n      \"fileList\": [\n        { \"filePath\": \"", (intmax_t)files->size);
+      sprintf(temp, "%s", files->d_name);
+      json_escape(temp, temp2);
+      fwprint(stdout, temp2, 0);
+      printf("\"");
+      tmpfile = files->duplicates;
+      while (tmpfile != NULL) {
+        printf(" },\n        { \"filePath\": \"");
+        sprintf(temp, "%s", tmpfile->d_name);
+        json_escape(temp, temp2);
+        fwprint(stdout, temp2, 0);
+        printf("\"");
+        tmpfile = tmpfile->duplicates;
+      }
+      printf(" }\n      ]\n    }");
+      comma = 1;
+    }
+    files = files->next;
+  }
+
+  printf("\n  ]\n}\n");
+
+  free(temp); free(temp2);
+  return;
+}
+
+
 static void printmatches(file_t * restrict files)
 {
   file_t * restrict tmpfile;
@@ -1346,7 +1447,7 @@ static void grokdir(const char * const restrict dir,
   size_t dirlen;
   struct travdone *traverse;
   int i, single = 0;
-  jdupes_ino_t inode, n_inode;
+  jdupes_ino_t inode;
   dev_t device, n_device;
   jdupes_mode_t mode;
   DIR *cd;
@@ -1449,7 +1550,7 @@ static void grokdir(const char * const restrict dir,
       if (recurse) {
         /* --one-file-system */
         if (ISFLAG(flags, F_ONEFS)
-            && (getdirstats(newfile->d_name, &n_inode, &n_device, &mode) == 0)
+            && (getdirstats(newfile->d_name, &inode, &n_device, &mode) == 0)
             && (device != n_device)) {
           free(newfile->d_name);
           free(newfile);
@@ -1908,6 +2009,7 @@ static inline void help_text(void)
 #ifndef NO_USER_ORDER
   printf(" -I --isolate     \tfiles in the same specified directory won't match\n");
 #endif
+  printf(" -j --json        \tproduce JSON (machine-readable) output\n");
 #ifndef NO_SYMLINKS
   printf(" -l --linksoft    \tmake relative symlinks for duplicates w/o prompting\n");
 #endif
@@ -1984,6 +2086,7 @@ int main(int argc, char **argv)
     { "hardlinks", 0, 0, 'H' },
     { "reverse", 0, 0, 'i' },
     { "isolate", 0, 0, 'I' },
+    { "json", 0, 0, 'j' },
     { "linksoft", 0, 0, 'l' },
     { "linkhard", 0, 0, 'L' },
     { "summarize", 0, 0, 'm'},
@@ -2020,7 +2123,7 @@ int main(int argc, char **argv)
   oldargv = cloneargs(argc, argv);
 
   while ((opt = getopt_long(argc, argv,
-  "@01ABC:dDfhHiIlLmMnNOpP:qQrRsStTvVzZo:x:X:",
+  "@01ABC:dDfhHiIjlLmMnNOpP:qQrRsStTvVzZo:x:X:",
   long_options, NULL)) != EOF) {
     switch (opt) {
     /* Unsupported but benign options can just be skipped */
@@ -2070,6 +2173,9 @@ int main(int argc, char **argv)
       fprintf(stderr, "warning: -I and -O are disabled and ignored in this build\n");
       break;
 #endif
+    case 'j':
+      SETFLAG(flags, F_PRINTJSON);
+      break;
     case 'm':
       SETFLAG(flags, F_SUMMARIZEMATCHES);
       break;
@@ -2155,7 +2261,7 @@ int main(int argc, char **argv)
       break;
     case 'v':
     case 'V':
-      printf("jdupes small stand-alone version (derived from v1.11.1)");
+      printf("jdupes small stand-alone version (derived from v%s, %s)", VER, VERDATE);
       printf("\nCopyright (C) 2015-2019 by Jody Bruchon <jody@jodybruchon.com>\n");
       exit(EXIT_SUCCESS);
     case 'o':
@@ -2223,6 +2329,7 @@ int main(int argc, char **argv)
       !!ISFLAG(flags, F_DELETEFILES) +
       !!ISFLAG(flags, F_HARDLINKFILES) +
       !!ISFLAG(flags, F_MAKESYMLINKS) +
+      !!ISFLAG(flags, F_PRINTJSON) +
       !!ISFLAG(flags, F_DEDUPEFILES);
 
   if (pm > 1) {
@@ -2261,6 +2368,9 @@ int main(int argc, char **argv)
       user_item_count++;
     }
   }
+
+  /* We don't need the double traversal check tree anymore */
+  travdone_free(travdone_head);
 
   if (ISFLAG(flags, F_REVERSESORT)) sort_direction = -1;
   if (!ISFLAG(flags, F_HIDEPROGRESS)) fprintf(stderr, "\n");
@@ -2357,6 +2467,7 @@ skip_file_scan:
   if (ISFLAG(flags, F_DEDUPEFILES)) dedupefiles(files);
 #endif /* ENABLE_BTRFS */
   if (ISFLAG(flags, F_PRINTMATCHES)) printmatches(files);
+  if (ISFLAG(flags, F_PRINTJSON)) printjson(files, argc, argv);
   if (ISFLAG(flags, F_SUMMARIZEMATCHES)) {
     if (ISFLAG(flags, F_PRINTMATCHES)) printf("\n\n");
     summarizematches(files);

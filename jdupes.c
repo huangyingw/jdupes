@@ -52,6 +52,7 @@
 #include "act_dedupefiles.h"
 #include "act_linkfiles.h"
 #include "act_printmatches.h"
+#include "act_printjson.h"
 #include "act_summarize.h"
 
 /* Detect Windows and modify as needed */
@@ -148,7 +149,7 @@ const struct size_suffix size_suffix[] = {
 };
 
 /* Assemble extension string from compile-time options */
-static const char *extensions[] = {
+const char *extensions[] = {
   #ifdef ON_WINDOWS
     "windows",
     #endif
@@ -502,12 +503,12 @@ static void add_exclude(const char *option)
   if (exclude_head != NULL) {
     /* Add to end of exclusion stack if head is present */
     while (excl->next != NULL) excl = excl->next;
-    excl->next = string_malloc(sizeof(struct exclude) + strlen(p));
+    excl->next = string_malloc(sizeof(struct exclude) + strlen(p) + 1);
     if (excl->next == NULL) oom("add_exclude alloc");
     excl = excl->next;
   } else {
     /* Allocate exclude_head if no exclusions exist yet */
-    exclude_head = string_malloc(sizeof(struct exclude) + strlen(p));
+    exclude_head = string_malloc(sizeof(struct exclude) + strlen(p) + 1);
     if (exclude_head == NULL) oom("add_exclude alloc");
     excl = exclude_head;
   }
@@ -532,7 +533,8 @@ static void add_exclude(const char *option)
   } else {
     /* Exclude uses string data; just copy it */
     excl->size = 0;
-    strcpy(excl->param, p);
+    if (*p != '\0') strcpy(excl->param, p);
+    else *(excl->param) = '\0';
   }
 
   LOUD(fprintf(stderr, "Added exclude: tag '%s', data '%s', size %lld, flags %d\n", opt, excl->param, (long long)excl->size, excl->flags);)
@@ -551,6 +553,7 @@ bad_size_suffix:
 }
 
 
+/* Returns -1 if stat() fails, 0 if it's a directory, 1 if it's not */
 extern int getdirstats(const char * const restrict name,
         jdupes_ino_t * const restrict inode, dev_t * const restrict dev,
         jdupes_mode_t * const restrict mode)
@@ -758,6 +761,17 @@ static struct travdone *travdone_alloc(const jdupes_ino_t inode, const dev_t dev
 }
 
 
+/* De-allocate the travdone tree */
+static void travdone_free(struct travdone * const restrict cur)
+{
+  if (cur == NULL) return;
+  if (cur->left != NULL) travdone_free(cur->left);
+  if (cur->left != NULL) travdone_free(cur->right);
+  string_free(cur);
+  return;
+}
+
+
 /* Add a single file to the file tree */
 static inline file_t *grokfile(const char * const restrict name, file_t * restrict * const restrict filelistp)
 {
@@ -793,7 +807,7 @@ static void grokdir(const char * const restrict dir,
   size_t dirlen;
   struct travdone *traverse;
   int i, single = 0;
-  jdupes_ino_t inode, n_inode;
+  jdupes_ino_t inode;
   dev_t device, n_device;
   jdupes_mode_t mode;
 #ifdef UNICODE
@@ -935,9 +949,9 @@ static void grokdir(const char * const restrict dir,
     /* Optionally recurse directories, including symlinked ones if requested */
     if (S_ISDIR(newfile->mode)) {
       if (recurse) {
-        /* --one-file-system */
+        /* --one-file-system - WARNING: this clobbers inode/mode */
         if (ISFLAG(flags, F_ONEFS)
-            && (getdirstats(newfile->d_name, &n_inode, &n_device, &mode) == 0)
+            && (getdirstats(newfile->d_name, &inode, &n_device, &mode) == 0)
             && (device != n_device)) {
           LOUD(fprintf(stderr, "grokdir: directory: not recursing (--one-file-system)\n"));
           string_free(newfile->d_name);
@@ -1016,7 +1030,7 @@ error_overflow:
 }
 
 
-/* Use Jody Bruchon's hash function on part or all of a file */
+/* Hash part or all of a file */
 static jdupes_hash_t *get_filehash(const file_t * const restrict checkfile,
                 const size_t max_read)
 {
@@ -1504,6 +1518,7 @@ static inline void help_text(void)
 #ifndef NO_USER_ORDER
   printf(" -I --isolate     \tfiles in the same specified directory won't match\n");
 #endif
+  printf(" -j --json        \tproduce JSON (machine-readable) output\n");
 #ifndef NO_SYMLINKS
   printf(" -l --linksoft    \tmake relative symlinks for duplicates w/o prompting\n");
 #endif
@@ -1597,6 +1612,7 @@ int main(int argc, char **argv)
     { "hardlinks", 0, 0, 'H' },
     { "reverse", 0, 0, 'i' },
     { "isolate", 0, 0, 'I' },
+    { "json", 0, 0, 'j' },
     { "linksoft", 0, 0, 'l' },
     { "linkhard", 0, 0, 'L' },
     { "summarize", 0, 0, 'm'},
@@ -1674,7 +1690,7 @@ int main(int argc, char **argv)
   oldargv = cloneargs(argc, argv);
 
   while ((opt = GETOPT(argc, argv,
-  "@01ABC:dDfhHiIlLmMnNOpP:qQrRsStTvVzZo:x:X:"
+  "@01ABC:dDfhHiIjlLmMnNOpP:qQrRsStTvVzZo:x:X:"
 #ifndef OMIT_GETOPT_LONG
           , long_options, NULL
 #endif
@@ -1737,6 +1753,9 @@ int main(int argc, char **argv)
       fprintf(stderr, "warning: -I and -O are disabled and ignored in this build\n");
       break;
 #endif
+    case 'j':
+      SETFLAG(flags, F_PRINTJSON);
+      break;
     case 'm':
       SETFLAG(flags, F_SUMMARIZEMATCHES);
       break;
@@ -1941,10 +1960,11 @@ int main(int argc, char **argv)
       !!ISFLAG(flags, F_DELETEFILES) +
       !!ISFLAG(flags, F_HARDLINKFILES) +
       !!ISFLAG(flags, F_MAKESYMLINKS) +
+      !!ISFLAG(flags, F_PRINTJSON) +
       !!ISFLAG(flags, F_DEDUPEFILES);
 
   if (pm > 1) {
-      fprintf(stderr, "Only one of --summarize, --printwithsummary, --delete,\n--linkhard, --linksoft, or --dedupe may be used\n");
+      fprintf(stderr, "Only one of --summarize, --printwithsummary, --delete, --linkhard,\n--linksoft, --json, or --dedupe may be used\n");
       string_malloc_destroy();
       exit(EXIT_FAILURE);
   }
@@ -1985,10 +2005,14 @@ int main(int argc, char **argv)
     }
   }
 
+  /* We don't need the double traversal check tree anymore */
+  travdone_free(travdone_head);
+
   if (ISFLAG(flags, F_REVERSESORT)) sort_direction = -1;
   if (!ISFLAG(flags, F_HIDEPROGRESS)) fprintf(stderr, "\n");
   if (!files) {
     fwprint(stderr, "No duplicates found.", 1);
+    string_malloc_destroy();
     exit(EXIT_SUCCESS);
   }
 
@@ -2029,7 +2053,7 @@ int main(int argc, char **argv)
            (curfile->inode == (*match)->inode) &&
            (curfile->device == (*match)->device))
          ) {
-        LOUD(fprintf(stderr, "MAIN: notice: quick or partial-only match (-Q/-T)\n"));
+        LOUD(fprintf(stderr, "MAIN: notice: hard linked, quick, or partial-only match (-H/-Q/-T)\n"));
         registerpair(match, curfile,
             (ordertype == ORDER_TIME) ? sort_pairs_by_mtime : sort_pairs_by_filename);
         dupecount++;
@@ -2043,6 +2067,7 @@ int main(int argc, char **argv)
       file1 = fopen(curfile->d_name, FILE_MODE_RO);
 #endif
       if (!file1) {
+        LOUD(fprintf(stderr, "MAIN: warning: file1 fopen() failed ('%s')\n", curfile->d_name));
         curfile = curfile->next;
         continue;
       }
@@ -2055,6 +2080,7 @@ int main(int argc, char **argv)
 #endif
       if (!file2) {
         fclose(file1);
+        LOUD(fprintf(stderr, "MAIN: warning: file2 fopen() failed ('%s')\n", (*match)->d_name));
         curfile = curfile->next;
         continue;
       }
@@ -2096,6 +2122,7 @@ skip_file_scan:
   if (ISFLAG(flags, F_DEDUPEFILES)) dedupefiles(files);
 #endif /* ENABLE_BTRFS */
   if (ISFLAG(flags, F_PRINTMATCHES)) printmatches(files);
+  if (ISFLAG(flags, F_PRINTJSON)) printjson(files, argc, argv);
   if (ISFLAG(flags, F_SUMMARIZEMATCHES)) {
     if (ISFLAG(flags, F_PRINTMATCHES)) printf("\n\n");
     summarizematches(files);

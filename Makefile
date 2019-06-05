@@ -55,6 +55,7 @@ CC ?= gcc
 COMPILER_OPTIONS = -Wall -Wextra -Wwrite-strings -Wcast-align -Wstrict-aliasing -Wstrict-overflow -Wstrict-prototypes -Wpointer-arith -Wundef
 COMPILER_OPTIONS += -Wshadow -Wfloat-equal -Wstrict-overflow=5 -Waggregate-return -Wcast-qual -Wswitch-default -Wswitch-enum -Wconversion -Wunreachable-code -Wformat=2 -Winit-self
 COMPILER_OPTIONS += -std=gnu99 -O2 -g -D_FILE_OFFSET_BITS=64 -fstrict-aliasing -pipe
+COMPILER_OPTIONS += -DSMA_MAX_FREE=11
 
 #####################################################################
 # no need to modify anything beyond this point                      #
@@ -122,7 +123,7 @@ INSTALL_DATA    = $(INSTALL) -m 0644
 
 OBJS += jdupes.o jody_paths.o jody_sort.o jody_win_unicode.o string_malloc.o
 OBJS += jody_cacheinfo.o
-OBJS += act_deletefiles.o act_linkfiles.o act_printmatches.o act_summarize.o
+OBJS += act_deletefiles.o act_linkfiles.o act_printmatches.o act_summarize.o act_printjson.o
 OBJS += xxhash.o
 OBJS += $(ADDITIONAL_OBJECTS)
 
