@@ -52,6 +52,7 @@
 #include "act_dedupefiles.h"
 #include "act_linkfiles.h"
 #include "act_printmatches.h"
+#include "act_printjson.h"
 #include "act_summarize.h"
 
 /* Detect Windows and modify as needed */
@@ -148,7 +149,7 @@ const struct size_suffix size_suffix[] = {
 };
 
 /* Assemble extension string from compile-time options */
-static const char *extensions[] = {
+const char *extensions[] = {
   #ifdef ON_WINDOWS
     "windows",
     #endif
@@ -388,8 +389,8 @@ static void update_progress(const char * const restrict msg, const int file_perc
  * Returns 1 if changed, 0 if not changed, negative if error */
 extern int file_has_changed(file_t * const restrict file)
 {
-  /* If -t/--no-tocttou specified then completely bypass this code */
-  if (ISFLAG(flags, F_NO_TOCTTOU)) return 0;
+  /* If -t/--nochangecheck specified then completely bypass this code */
+  if (ISFLAG(flags, F_NOCHANGECHECK)) return 0;
 
   if (file == NULL || file->d_name == NULL) nullptr("file_has_changed()");
   LOUD(fprintf(stderr, "file_has_changed('%s')\n", file->d_name);)
@@ -1517,6 +1518,7 @@ static inline void help_text(void)
 #ifndef NO_USER_ORDER
   printf(" -I --isolate     \tfiles in the same specified directory won't match\n");
 #endif
+  printf(" -j --json        \tproduce JSON (machine-readable) output\n");
 #ifndef NO_SYMLINKS
   printf(" -l --linksoft    \tmake relative symlinks for duplicates w/o prompting\n");
 #endif
@@ -1552,7 +1554,7 @@ static inline void help_text(void)
   printf(" -s --symlinks    \tfollow symlinks\n");
 #endif
   printf(" -S --size        \tshow size of duplicate files\n");
-  printf(" -t --no-tocttou  \tdisable security check for file changes (aka TOCTTOU)\n");
+  printf(" -t --nochangecheck\tdisable security check for file changes (aka TOCTTOU)\n");
   printf(" -T --partial-only \tmatch based on partial hashes only. WARNING:\n");
   printf("                  \tEXTREMELY DANGEROUS paired with destructive actions!\n");
   printf("                  \t-T must be specified twice to work. Read the manual!\n");
@@ -1610,6 +1612,7 @@ int main(int argc, char **argv)
     { "hardlinks", 0, 0, 'H' },
     { "reverse", 0, 0, 'i' },
     { "isolate", 0, 0, 'I' },
+    { "json", 0, 0, 'j' },
     { "linksoft", 0, 0, 'l' },
     { "linkhard", 0, 0, 'L' },
     { "summarize", 0, 0, 'm'},
@@ -1628,7 +1631,7 @@ int main(int argc, char **argv)
     { "recursive:", 0, 0, 'R' },
     { "symlinks", 0, 0, 's' },
     { "size", 0, 0, 'S' },
-    { "no-tocttou", 0, 0, 't' },
+    { "nochangecheck", 0, 0, 't' },
     { "partial-only", 0, 0, 'T' },
     { "version", 0, 0, 'v' },
     { "xsize", 1, 0, 'x' },
@@ -1687,7 +1690,7 @@ int main(int argc, char **argv)
   oldargv = cloneargs(argc, argv);
 
   while ((opt = GETOPT(argc, argv,
-  "@01ABC:dDfhHiIlLmMnNOpP:qQrRsStTvVzZo:x:X:"
+  "@01ABC:dDfhHiIjlLmMnNOpP:qQrRsStTvVzZo:x:X:"
 #ifndef OMIT_GETOPT_LONG
           , long_options, NULL
 #endif
@@ -1750,6 +1753,9 @@ int main(int argc, char **argv)
       fprintf(stderr, "warning: -I and -O are disabled and ignored in this build\n");
       break;
 #endif
+    case 'j':
+      SETFLAG(flags, F_PRINTJSON);
+      break;
     case 'm':
       SETFLAG(flags, F_SUMMARIZEMATCHES);
       break;
@@ -1772,7 +1778,7 @@ int main(int argc, char **argv)
       else if (strcmp(optarg, "fullhash") == 0) SETFLAG(p_flags, P_FULLHASH);
       else {
         fprintf(stderr, "Option '%s' is not valid for -P\n", optarg);
-	exit(EXIT_FAILURE);
+        exit(EXIT_FAILURE);
       }
       break;
     case 'q':
@@ -1788,7 +1794,7 @@ int main(int argc, char **argv)
       SETFLAG(flags, F_RECURSEAFTER);
       break;
     case 't':
-      SETFLAG(flags, F_NO_TOCTTOU);
+      SETFLAG(flags, F_NOCHANGECHECK);
       break;
     case 'T':
       if (partialonly_spec == 0)
@@ -1954,10 +1960,11 @@ int main(int argc, char **argv)
       !!ISFLAG(flags, F_DELETEFILES) +
       !!ISFLAG(flags, F_HARDLINKFILES) +
       !!ISFLAG(flags, F_MAKESYMLINKS) +
+      !!ISFLAG(flags, F_PRINTJSON) +
       !!ISFLAG(flags, F_DEDUPEFILES);
 
   if (pm > 1) {
-      fprintf(stderr, "Only one of --summarize, --printwithsummary, --delete,\n--linkhard, --linksoft, or --dedupe may be used\n");
+      fprintf(stderr, "Only one of --summarize, --printwithsummary, --delete, --linkhard,\n--linksoft, --json, or --dedupe may be used\n");
       string_malloc_destroy();
       exit(EXIT_FAILURE);
   }
@@ -2115,6 +2122,7 @@ skip_file_scan:
   if (ISFLAG(flags, F_DEDUPEFILES)) dedupefiles(files);
 #endif /* ENABLE_BTRFS */
   if (ISFLAG(flags, F_PRINTMATCHES)) printmatches(files);
+  if (ISFLAG(flags, F_PRINTJSON)) printjson(files, argc, argv);
   if (ISFLAG(flags, F_SUMMARIZEMATCHES)) {
     if (ISFLAG(flags, F_PRINTMATCHES)) printf("\n\n");
     summarizematches(files);

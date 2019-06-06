@@ -20,6 +20,9 @@
    TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
    SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE. */
 
+#define VER "1.13"
+#define VERDATE "2019-06-04"
+
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -57,45 +60,49 @@ typedef mode_t jdupes_mode_t;
 #define CLEARFLAG(a,b) (a &= (~b))
 
 /* Behavior modification flags */
-#define F_RECURSE		0x00000001U
-#define F_HIDEPROGRESS		0x00000002U
-#define F_SOFTABORT		0x00000004U
-#define F_FOLLOWLINKS		0x00000008U
-#define F_DELETEFILES		0x00000010U
-#define F_INCLUDEEMPTY		0x00000020U
-#define F_CONSIDERHARDLINKS	0x00000040U
-#define F_SHOWSIZE		0x00000080U
-#define F_OMITFIRST		0x00000100U
-#define F_RECURSEAFTER		0x00000200U
-#define F_NOPROMPT		0x00000400U
-#define F_SUMMARIZEMATCHES	0x00000800U
-#define F_EXCLUDEHIDDEN		0x00001000U
-#define F_PERMISSIONS		0x00002000U
-#define F_HARDLINKFILES		0x00004000U
-#define F_EXCLUDESIZE		0x00008000U
-#define F_QUICKCOMPARE		0x00010000U
-#define F_USEPARAMORDER		0x00020000U
-#define F_DEDUPEFILES		0x00040000U
-#define F_REVERSESORT		0x00080000U
-#define F_ISOLATE		0x00100000U
-#define F_MAKESYMLINKS		0x00200000U
-#define F_PRINTMATCHES		0x00400000U
-#define F_ONEFS			0x00800000U
-#define F_PRINTNULL		0x01000000U
-#define F_PARTIALONLY		0x02000000U
-#define F_NO_TOCTTOU		0x04000000U
+#define F_RECURSE		(1U << 0)
+#define F_HIDEPROGRESS		(1U << 1)
+#define F_SOFTABORT		(1U << 2)
+#define F_FOLLOWLINKS		(1U << 3)
+#define F_DELETEFILES		(1U << 4)
+#define F_INCLUDEEMPTY		(1U << 5)
+#define F_CONSIDERHARDLINKS	(1U << 6)
+#define F_SHOWSIZE		(1U << 7)
+#define F_OMITFIRST		(1U << 8)
+#define F_RECURSEAFTER		(1U << 9)
+#define F_NOPROMPT		(1U << 10)
+#define F_SUMMARIZEMATCHES	(1U << 11)
+#define F_EXCLUDEHIDDEN		(1U << 12)
+#define F_PERMISSIONS		(1U << 13)
+#define F_HARDLINKFILES		(1U << 14)
+#define F_EXCLUDESIZE		(1U << 15)
+#define F_QUICKCOMPARE		(1U << 16)
+#define F_USEPARAMORDER		(1U << 17)
+#define F_DEDUPEFILES		(1U << 18)
+#define F_REVERSESORT		(1U << 19)
+#define F_ISOLATE		(1U << 20)
+#define F_MAKESYMLINKS		(1U << 21)
+#define F_PRINTMATCHES		(1U << 22)
+#define F_ONEFS			(1U << 23)
+#define F_PRINTNULL		(1U << 24)
+#define F_PARTIALONLY		(1U << 25)
+#define F_NOCHANGECHECK		(1U << 26)
+#define F_PRINTJSON		(1U << 27)
+
+#define F_LOUD			(1U << 30)
+#define F_DEBUG			(1U << 31)
 
 /* Per-file true/false flags */
-#define F_VALID_STAT		0x00000001U
-#define F_HASH_PARTIAL		0x00000002U
-#define F_HASH_FULL		0x00000004U
-#define F_HAS_DUPES		0x00000008U
-#define F_IS_SYMLINK		0x00000010U
+#define F_VALID_STAT		(1U << 0)
+#define F_HASH_PARTIAL		(1U << 1)
+#define F_HASH_FULL		(1U << 2)
+#define F_HAS_DUPES		(1U << 3)
+#define F_IS_SYMLINK		(1U << 4)
 
 /* Extra print flags */
-#define P_PARTIAL		0x00000001U
-#define P_EARLYMATCH		0x00000002U
-#define P_FULLHASH		0x00000004U
+#define P_PARTIAL		(1U << 0)
+#define P_EARLYMATCH		(1U << 1)
+#define P_FULLHASH		(1U << 2)
 
 typedef enum {
   ORDER_NAME = 0,
@@ -455,8 +462,8 @@ static void update_progress(const char * const restrict msg, const int file_perc
  * Returns 1 if changed, 0 if not changed, negative if error */
 static int file_has_changed(file_t * const restrict file)
 {
-  /* If -t/--no-tocttou specified then completely bypass this code */
-  if (ISFLAG(flags, F_NO_TOCTTOU)) return 0;
+  /* If -t/--nochangecheck specified then completely bypass this code */
+  if (ISFLAG(flags, F_NOCHANGECHECK)) return 0;
 
   if (file == NULL || file->d_name == NULL) nullptr("file_has_changed()");
 
@@ -868,7 +875,7 @@ static void dedupefiles(file_t * restrict files)
 
         /* Never allow hard links to be passed to dedupe */
         if (curfile->device == files->device && curfile->inode == files->inode) continue;
-        
+
         dupe_filenames[cur_info] = curfile->d_name;
         readonly = 0;
         if (access(curfile->d_name, W_OK) != 0) readonly = 1;
@@ -1275,8 +1282,93 @@ static void linkfiles(file_t *files, const int hard)
 static int fwprint(FILE * const restrict stream, const char * const restrict str, const int cr)
 {
   if (cr == 2) return fprintf(stream, "%s%c", str, 0);
-  else return fprintf(stream, "%s%s", str, cr == 1 ? "\n" : "");		
+  else return fprintf(stream, "%s%s", str, cr == 1 ? "\n" : "");
 }
+
+
+/* Print comprehensive information to stdout in JSON format */
+#define TO_HEX(a) (char)(((a) & 0x0f) <= 0x09 ? (a) + 0x30 : (a) + 0x57)
+
+static void json_escape(char *string, char *escaped)
+{
+  int length = 0;
+  while (*string != '\0' && length < (PATH_MAX * 2 - 1)) {
+    switch (*string) {
+      case '\"':
+      case '\\':
+        *escaped++ = '\\';
+        *escaped++ = *string++;
+        length += 2;
+        break;
+      default:
+	if (*string < 0x20) {
+	  strcpy(escaped, "\\u00");
+	  escaped += 3;
+	  *escaped++ = TO_HEX((*string >> 4));
+	  *escaped++ = TO_HEX(*string++);
+	  length += 5;
+	} else {
+          *escaped++ = *string++;
+          length++;
+	}
+        break;
+    }
+  }
+  *escaped = '\0';
+  return;
+}
+
+extern void printjson(file_t * restrict files, const int argc, char **argv)
+{
+  file_t * restrict tmpfile;
+  int arg = 0, comma = 0;
+  char *temp = malloc(PATH_MAX * 2);
+  char *temp2 = malloc(PATH_MAX * 2);
+  char *temp_insert = temp;
+
+  /* Output information about the jdupes command environment */
+  printf("{\n  \"jdupesVersion\": \"%s\",\n  \"jdupesVersionDate\": \"%s\",\n", VER, VERDATE);
+
+  printf("  \"commandLine\": \"");
+  while (arg < argc) {
+    sprintf(temp_insert, " %s", argv[arg]);
+    temp_insert += strlen(temp_insert);
+    arg++;
+  }
+  json_escape(temp, temp2);
+  printf("%s\",\n", temp2);
+  printf("  \"extensionFlags\": \"standalone\",\n");
+
+  printf("  \"matchSets\": [\n");
+  while (files != NULL) {
+    if (ISFLAG(files->flags, F_HAS_DUPES)) {
+      if (comma) printf(",\n");
+      printf("    {\n      \"fileSize\": %" PRIdMAX ",\n      \"fileList\": [\n        { \"filePath\": \"", (intmax_t)files->size);
+      sprintf(temp, "%s", files->d_name);
+      json_escape(temp, temp2);
+      fwprint(stdout, temp2, 0);
+      printf("\"");
+      tmpfile = files->duplicates;
+      while (tmpfile != NULL) {
+        printf(" },\n        { \"filePath\": \"");
+        sprintf(temp, "%s", tmpfile->d_name);
+        json_escape(temp, temp2);
+        fwprint(stdout, temp2, 0);
+        printf("\"");
+        tmpfile = tmpfile->duplicates;
+      }
+      printf(" }\n      ]\n    }");
+      comma = 1;
+    }
+    files = files->next;
+  }
+
+  printf("\n  ]\n}\n");
+
+  free(temp); free(temp2);
+  return;
+}
+
 
 static void printmatches(file_t * restrict files)
 {
@@ -1920,6 +2012,7 @@ static inline void help_text(void)
 #ifndef NO_USER_ORDER
   printf(" -I --isolate     \tfiles in the same specified directory won't match\n");
 #endif
+  printf(" -j --json        \tproduce JSON (machine-readable) output\n");
 #ifndef NO_SYMLINKS
   printf(" -l --linksoft    \tmake relative symlinks for duplicates w/o prompting\n");
 #endif
@@ -1952,7 +2045,7 @@ static inline void help_text(void)
   printf(" -s --symlinks    \tfollow symlinks\n");
 #endif
   printf(" -S --size        \tshow size of duplicate files\n");
-  printf(" -t --no-tocttou  \tdisable security check for file changes (aka TOCTTOU)\n");
+  printf(" -t --nochangecheck  \tdisable security check for file changes (aka TOCTTOU)\n");
   printf(" -T --partial-only \tmatch based on partial hashes only. WARNING:\n");
   printf("                  \tEXTREMELY DANGEROUS paired with destructive actions!\n");
   printf("                  \t-T must be specified twice to work. Read the manual!\n");
@@ -1996,6 +2089,7 @@ int main(int argc, char **argv)
     { "hardlinks", 0, 0, 'H' },
     { "reverse", 0, 0, 'i' },
     { "isolate", 0, 0, 'I' },
+    { "json", 0, 0, 'j' },
     { "linksoft", 0, 0, 'l' },
     { "linkhard", 0, 0, 'L' },
     { "summarize", 0, 0, 'm'},
@@ -2014,7 +2108,7 @@ int main(int argc, char **argv)
     { "recursive:", 0, 0, 'R' },
     { "symlinks", 0, 0, 's' },
     { "size", 0, 0, 'S' },
-    { "no-tocttou", 0, 0, 't' },
+    { "nochangecheck", 0, 0, 't' },
     { "partial-only", 0, 0, 'T' },
     { "version", 0, 0, 'v' },
     { "xsize", 1, 0, 'x' },
@@ -2032,7 +2126,7 @@ int main(int argc, char **argv)
   oldargv = cloneargs(argc, argv);
 
   while ((opt = getopt_long(argc, argv,
-  "@01ABC:dDfhHiIlLmMnNOpP:qQrRsStTvVzZo:x:X:",
+  "@01ABC:dDfhHiIjlLmMnNOpP:qQrRsStTvVzZo:x:X:",
   long_options, NULL)) != EOF) {
     switch (opt) {
     /* Unsupported but benign options can just be skipped */
@@ -2082,6 +2176,9 @@ int main(int argc, char **argv)
       fprintf(stderr, "warning: -I and -O are disabled and ignored in this build\n");
       break;
 #endif
+    case 'j':
+      SETFLAG(flags, F_PRINTJSON);
+      break;
     case 'm':
       SETFLAG(flags, F_SUMMARIZEMATCHES);
       break;
@@ -2104,7 +2201,7 @@ int main(int argc, char **argv)
       else if (strcmp(optarg, "fullhash") == 0) SETFLAG(p_flags, P_FULLHASH);
       else {
         fprintf(stderr, "Option '%s' is not valid for -P\n", optarg);
-	exit(EXIT_FAILURE);
+        exit(EXIT_FAILURE);
       }
       break;
     case 'q':
@@ -2120,7 +2217,7 @@ int main(int argc, char **argv)
       SETFLAG(flags, F_RECURSEAFTER);
       break;
     case 't':
-      SETFLAG(flags, F_NO_TOCTTOU);
+      SETFLAG(flags, F_NOCHANGECHECK);
       break;
     case 'T':
       if (partialonly_spec == 0)
@@ -2167,7 +2264,7 @@ int main(int argc, char **argv)
       break;
     case 'v':
     case 'V':
-      printf("jdupes small stand-alone version (derived from v1.12)");
+      printf("jdupes small stand-alone version (derived from v%s, %s)", VER, VERDATE);
       printf("\nCopyright (C) 2015-2019 by Jody Bruchon <jody@jodybruchon.com>\n");
       exit(EXIT_SUCCESS);
     case 'o':
@@ -2235,6 +2332,7 @@ int main(int argc, char **argv)
       !!ISFLAG(flags, F_DELETEFILES) +
       !!ISFLAG(flags, F_HARDLINKFILES) +
       !!ISFLAG(flags, F_MAKESYMLINKS) +
+      !!ISFLAG(flags, F_PRINTJSON) +
       !!ISFLAG(flags, F_DEDUPEFILES);
 
   if (pm > 1) {
@@ -2372,6 +2470,7 @@ skip_file_scan:
   if (ISFLAG(flags, F_DEDUPEFILES)) dedupefiles(files);
 #endif /* ENABLE_BTRFS */
   if (ISFLAG(flags, F_PRINTMATCHES)) printmatches(files);
+  if (ISFLAG(flags, F_PRINTJSON)) printjson(files, argc, argv);
   if (ISFLAG(flags, F_SUMMARIZEMATCHES)) {
     if (ISFLAG(flags, F_PRINTMATCHES)) printf("\n\n");
     summarizematches(files);
