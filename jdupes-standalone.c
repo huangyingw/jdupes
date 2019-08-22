@@ -42,10 +42,27 @@
 #include <unistd.h>
 /* Optional btrfs support */
 #ifdef ENABLE_BTRFS
- #include <linux/btrfs.h>
  #include <sys/ioctl.h>
  #include <sys/utsname.h>
-#endif
+ #ifdef STATIC_BTRFS_H
+  /* Static BTRFS header */
+  #include <linux/types.h>
+  #define BTRFS_IOCTL_MAGIC 0x94
+  #define BTRFS_DEVICE_PATH_NAME_MAX 1024
+  #define BTRFS_SAME_DATA_DIFFERS	1
+  struct btrfs_ioctl_same_extent_info {
+   __s64 fd; __u64 logical_offset; __u64 bytes_deduped; __s32 status; __u32 reserved;
+  };
+  struct btrfs_ioctl_same_args {
+   __u64 logical_offset; __u64 length; __u16 dest_count; __u16 reserved1;
+   __u32 reserved2; struct btrfs_ioctl_same_extent_info info[0];
+  };
+  #define BTRFS_IOC_FILE_EXTENT_SAME _IOWR(BTRFS_IOCTL_MAGIC, 54, struct btrfs_ioctl_same_args)
+  /* Static BTRFS header */
+ #else
+  #include <linux/btrfs.h>
+ #endif /* STATIC_BTRFS_H */
+#endif /* ENABLE_BTRFS */
 
 #define JODY_HASH_WIDTH 32
 typedef uint32_t jodyhash_t;
@@ -1301,12 +1318,12 @@ static void json_escape(char *string, char *escaped)
         length += 2;
         break;
       default:
-	if (*string < 0x20) {
+	if (!(*string & 0xe0)) {
 	  strcpy(escaped, "\\u00");
-	  escaped += 3;
+	  escaped += 4;
 	  *escaped++ = TO_HEX((*string >> 4));
 	  *escaped++ = TO_HEX(*string++);
-	  length += 5;
+	  length += 6;
 	} else {
           *escaped++ = *string++;
           length++;
