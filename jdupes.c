@@ -1269,9 +1269,7 @@ static file_t **checkmatch(filetree_t * restrict tree, file_t * const restrict f
     }
   }
 
-  if( (cantmatch!=0) && (cmpresult==0) ) {
-    cmpresult = -1;
-  }
+  if ((cantmatch!=0) && (cmpresult==0)) cmpresult = -1;
 
   if (cmpresult < 0) {
     if (tree->left != NULL) {
@@ -1872,6 +1870,9 @@ int main(int argc, char **argv)
       printf("CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,\n");
       printf("TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE\n");
       printf("SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.\n");
+      printf("\nIf you find this software useful, please consider financially\n");
+      printf("supporting its continued developemnt by visiting this URL:\n");
+      printf("      https://www.subscribestar.com/JodyBruchon\n");
       exit(EXIT_SUCCESS);
     case 'o':
       if (!strncasecmp("name", optarg, 5)) {
