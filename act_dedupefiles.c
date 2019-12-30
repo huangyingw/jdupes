@@ -3,7 +3,7 @@
 
 #include "jdupes.h"
 
-#ifdef ENABLE_FSDEDUP
+#ifdef ENABLE_DEDUPE
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
@@ -13,11 +13,17 @@
 #include <fcntl.h>
 
 #ifdef __linux__
-/* Use built-in static BTRFS header if requested */
-#ifdef STATIC_BTRFS_H
-#include "btrfs-static.h"
+/* Use built-in static dedupe header if requested */
+#ifdef STATIC_DEDUPE_H
+#include "dedupe-static.h"
 #else
 #include <linux/fs.h>
+#endif
+
+/* If the Linux headers are too old, automatically use the static one */
+#ifndef FILE_DEDUPE_RANGE_DIFFERS
+#warning Automatically enabled STATIC_DEDUPE_H due to insufficient header support
+#include "dedupe-static.h"
 #endif
 
 #include <sys/ioctl.h>
@@ -28,7 +34,7 @@
 
 #include "act_dedupefiles.h"
 
-#define BTRFS_DEDUP_MAX_SIZE 16777216
+#define KERNEL_DEDUP_MAX_SIZE 16777216
 
 /* Message to append to BTRFS warnings based on write permissions */
 static const char *readonly_msg[] = {
@@ -133,7 +139,7 @@ extern void dedupefiles(file_t * restrict files)
           LOUD(fprintf(stderr, "opening loop: fallback open('%s', O_RDONLY) succeeded\n", curfile->d_name);)
         }
 
-        same->info[cur_info].fd = fd;
+        same->info[cur_info].dest_fd = fd;
         cur_info++;
         total_files++;
       }
@@ -149,21 +155,21 @@ extern void dedupefiles(file_t * restrict files)
 
       /* Call dedupe ioctl to pass the files to the kernel */
       ret = 0;
-      same->length = (uint64_t)BTRFS_DEDUP_MAX_SIZE;
-      for (cur_offset = 0; cur_offset < files->size; cur_offset += BTRFS_DEDUP_MAX_SIZE) {
-        same->logical_offset = (uint64_t)cur_offset;
+      same->src_length = (uint64_t)KERNEL_DEDUP_MAX_SIZE;
+      for (cur_offset = 0; cur_offset < files->size; cur_offset += KERNEL_DEDUP_MAX_SIZE) {
+        same->src_offset = (uint64_t)cur_offset;
         for (cur_info = 0; cur_info < n_dupes; cur_info++) {
-          same->info[cur_info].logical_offset = (uint64_t)cur_offset;
+          same->info[cur_info].dest_offset = (uint64_t)cur_offset;
         }
-        if (BTRFS_DEDUP_MAX_SIZE + cur_offset < files->size)
-          same->length = (uint64_t)BTRFS_DEDUP_MAX_SIZE;
+        if (KERNEL_DEDUP_MAX_SIZE + cur_offset < files->size)
+          same->src_length = (uint64_t)KERNEL_DEDUP_MAX_SIZE;
         else
-          same->length = (uint64_t)(files->size - cur_offset);
+          same->src_length = (uint64_t)(files->size - cur_offset);
 
-        ret = ioctl(fd, BTRFS_IOC_FILE_EXTENT_SAME, same);
+        ret = ioctl(fd, FIDEDUPERANGE, same);
         if (ret < 0)
           break;
-        LOUD(fprintf(stderr, "dedupe: ioctl('%s' [%d], BTRFS_IOC_FILE_EXTENT_SAME, same) => %d\n", files->d_name, fd, ret);)
+        LOUD(fprintf(stderr, "dedupe: ioctl('%s' [%d], FIDEDUPERANGE, same) => %d\n", files->d_name, fd, ret);)
       } 
       if (close(fd) == -1) fprintf(stderr, "Unable to close(\"%s\"): %s\n", files->d_name, strerror(errno));
 
@@ -189,7 +195,7 @@ extern void dedupefiles(file_t * restrict files)
 
 cleanup:
       for (cur_info = 0; cur_info < n_dupes; cur_info++) {
-        if (close((int)same->info[cur_info].fd) == -1) {
+        if (close((int)same->info[cur_info].dest_fd) == -1) {
           fprintf(stderr, "unable to close(\"%s\"): %s", dupe_filenames[cur_info],
             strerror(errno));
         }
@@ -205,4 +211,4 @@ cleanup:
   free(dupe_filenames);
   return;
 }
-#endif /* ENABLE_FSDEDUP */
+#endif /* ENABLE_DEDUPE */
