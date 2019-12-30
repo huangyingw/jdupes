@@ -35,7 +35,7 @@ If a choice must be made between being aggressive or careful, the careful
 way is always chosen.
 
 jdupes includes features that are not always found elsewhere. Examples of
-such features include btrfs block-level deduplication and control over
+such features include block-level data deduplication and control over
 which file is kept when a match set is automatically deleted. jdupes is
 not afraid of dropping features of low value; a prime example is the `-1`
 switch which outputs all matches in a set on one line, a feature which was
@@ -134,6 +134,9 @@ option is specified (delete, summarize, link, dedupe, etc.)
  -v --version           display jdupes version and license information
  -x --xsize=SIZE        exclude files of size < SIZE bytes from consideration
     --xsize=+SIZE       '+' specified before SIZE, exclude size > SIZE
+ -X --extfilter=spec:x  filter files based on specified criteria
+                        specs: size+-=
+                        Filters are cumulative: -X spec:ab -X spec:cd
  -X --exclude=spec:info exclude files based on specified criteria
                         specs: size+-=
                         Exclusions are cumulative: -X dir:abc -X dir:efg
@@ -424,9 +427,9 @@ Please DO NOT contact Adrian Lopez about issues with jdupes.
 
 Legal information and software license
 --------------------------------------------------------------------------
-jdupes is Copyright (C) 2015-2019 by Jody Bruchon <jody@jodybruchon.com>
-Derived from the original 'fdupes' (C) 1999-2019 by Adrian Lopez
-Includes other code libraries which are (C) 2015-2019 by Jody Bruchon
+jdupes is Copyright (C) 2015-2020 by Jody Bruchon <jody@jodybruchon.com>
+Derived from the original 'fdupes' 1.51 (C) 1999-2014 by Adrian Lopez
+Includes other code libraries which are (C) 2015-2020 by Jody Bruchon
 
 The MIT License
 

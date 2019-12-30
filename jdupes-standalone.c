@@ -1,5 +1,5 @@
-/* jdupes (C) 2015-2019 Jody Bruchon <jody@jodybruchon.com>
-   Derived from fdupes (C) 1999-2019 Adrian Lopez
+/* jdupes (C) 2015-2020 Jody Bruchon <jody@jodybruchon.com>
+   Forked from fdupes 1.51 (C) 1999-2014 Adrian Lopez
 
    Permission is hereby granted, free of charge, to any person
    obtaining a copy of this software and associated documentation files
@@ -21,7 +21,7 @@
    SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE. */
 
 #define VER "1.13.1"
-#define VERDATE "2019-06-10"
+#define VERDATE "2020-06-10"
 
 #include <dirent.h>
 #include <errno.h>
@@ -41,7 +41,7 @@
 #include <sys/types.h>
 #include <unistd.h>
 /* Optional FIDEDUPERANGE support */
-#ifdef ENABLE_FSDEDUP
+#ifdef ENABLE_DEDUPE
  #ifndef __linux__
   #error "Filesystem-managed deduplication only available for Linux."
  #endif /* __linux__ */
@@ -65,7 +65,7 @@
  #else
   #include <linux/fs.h>
  #endif /* STATIC_BTRFS_H */
-#endif /* ENABLE_FSDEDUP */
+#endif /* ENABLE_DEDUPE */
 
 #define JODY_HASH_WIDTH 32
 typedef uint32_t jodyhash_t;
@@ -341,7 +341,7 @@ static void nullptr(const char * restrict func)
 
 
 /* Jody Bruchon's fast hashing function
- * Copyright (C) 2014-2019 by Jody Bruchon <jody@jodybruchon.com>
+ * Copyright (C) 2014-2020 by Jody Bruchon <jody@jodybruchon.com>
  * Released under The MIT License
  */
 
@@ -824,7 +824,7 @@ static unsigned int get_max_dupes(const file_t *files, unsigned int * const rest
 
 
 /* BTRFS deduplication of file blocks */
-#ifdef ENABLE_FSDEDUP
+#ifdef ENABLE_DEDUPE
 
 /* Message to append to BTRFS warnings based on write permissions */
 static const char *readonly_msg[] = {
@@ -975,7 +975,7 @@ cleanup:
   free(dupe_filenames);
   return;
 }
-#endif /* ENABLE_FSDEDUP */
+#endif /* ENABLE_DEDUPE */
 
 
 /* Delete duplicate files automatically or interactively */
@@ -2027,7 +2027,7 @@ static inline void help_text(void)
   printf(" -0 --printnull   \toutput nulls instead of CR/LF (like 'find -print0')\n");
   printf(" -1 --one-file-system \tdo not match files on different filesystems/devices\n");
   printf(" -A --nohidden    \texclude hidden files from consideration\n");
-#ifdef ENABLE_FSDEDUP
+#ifdef ENABLE_DEDUPE
   printf(" -B --dedupe      \tsend matches to filesystem for block-level deduplication\n");
 #endif
   printf(" -d --delete      \tprompt user for files to preserve and delete all\n");
@@ -2299,7 +2299,7 @@ int main(int argc, char **argv)
     case 'v':
     case 'V':
       printf("jdupes small stand-alone version (derived from v%s, %s)", VER, VERDATE);
-      printf("\nCopyright (C) 2015-2019 by Jody Bruchon <jody@jodybruchon.com>\n");
+      printf("\nCopyright (C) 2015-2020 by Jody Bruchon <jody@jodybruchon.com>\n");
       exit(EXIT_SUCCESS);
     case 'o':
       if (!strncasecmp("name", optarg, 5)) {
@@ -2312,7 +2312,7 @@ int main(int argc, char **argv)
       }
       break;
     case 'B':
-#ifdef ENABLE_FSDEDUP
+#ifdef ENABLE_DEDUPE
       SETFLAG(flags, F_DEDUPEFILES);
       /* btrfs will do the byte-for-byte check itself */
       SETFLAG(flags, F_QUICKCOMPARE);
@@ -2356,7 +2356,7 @@ int main(int argc, char **argv)
     exit(EXIT_FAILURE);
   }
 
-#ifdef ENABLE_FSDEDUP
+#ifdef ENABLE_DEDUPE
   if (ISFLAG(flags, F_CONSIDERHARDLINKS) && ISFLAG(flags, F_DEDUPEFILES))
     fprintf(stderr, "warning: option --dedupe overrides the behavior of --hardlinks\n");
 #endif
@@ -2500,9 +2500,9 @@ skip_file_scan:
 #ifndef NO_HARDLINKS
   if (ISFLAG(flags, F_HARDLINKFILES)) linkfiles(files, 1);
 #endif /* NO_HARDLINKS */
-#ifdef ENABLE_FSDEDUP
+#ifdef ENABLE_DEDUPE
   if (ISFLAG(flags, F_DEDUPEFILES)) dedupefiles(files);
-#endif /* ENABLE_FSDEDUP */
+#endif /* ENABLE_DEDUPE */
   if (ISFLAG(flags, F_PRINTMATCHES)) printmatches(files);
   if (ISFLAG(flags, F_PRINTJSON)) printjson(files, argc, argv);
   if (ISFLAG(flags, F_SUMMARIZEMATCHES)) {
