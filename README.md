@@ -6,9 +6,13 @@ files.
 A WORD OF WARNING: jdupes IS NOT a drop-in compatible replacement for
 fdupes! Do not blindly replace fdupes with jdupes in scripts and expect
 everything to work the same way. Option availability and meanings differ
-between the two programs. For example, the -I switch in jdupes means
+between the two programs. For example, the `-I` switch in jdupes means
 "isolate" and blocks intra-argument matching, while in fdupes it means
 "immediately delete files during scanning without prompting the user."
+
+Please consider financially supporting continued developemnt of jdupes:
+
+https://www.subscribestar.com/JodyBruchon
 
 
 Why use jdupes instead of the original fdupes or other duplicate finders?
@@ -31,9 +35,9 @@ If a choice must be made between being aggressive or careful, the careful
 way is always chosen.
 
 jdupes includes features that are not always found elsewhere. Examples of
-such features include btrfs block-level deduplication and control over
+such features include block-level data deduplication and control over
 which file is kept when a match set is automatically deleted. jdupes is
-not afraid of dropping features of low value; a prime example is the -1
+not afraid of dropping features of low value; a prime example is the `-1`
 switch which outputs all matches in a set on one line, a feature which was
 found to be useless in real-world tests and therefore thrown out.
 
@@ -65,22 +69,26 @@ this type of matching to jdupes.
 There are some match options available in jdupes that enable dangerous file
 matching based on partial or likely but not 100% certain matching. These
 are considered expert options for special situations and are clearly and
-loudly documented as being dangerous. The -Q and -T options are notable
-examples, and the extreme danger of the -T option is safeguarded by a
+loudly documented as being dangerous. The `-Q` and `-T` options are notable
+examples, and the extreme danger of the `-T` option is safeguarded by a
 requirement to specify it twice so it can't be used accidentally.
 
 
 Usage
 --------------------------------------------------------------------------
+```
 Usage: jdupes [options] DIRECTORY...
+```
 
 Duplicate file sets will be printed by default unless a different action
 option is specified (delete, summarize, link, dedupe, etc.)
+
+```
  -@ --loud              output annoying low-level debug info while running
  -0 --printnull         output nulls instead of CR/LF (like 'find -print0')
  -1 --one-file-system   do not match files on different filesystems/devices
  -A --nohidden          exclude hidden files from consideration
- -B --dedupe            Send matches to btrfs for block-level deduplication
+ -B --dedupe            Send matches to filesystem for block-level deduplication
  -C --chunksize=#       override I/O chunk size (min 4096, max 16777216)
  -d --delete            prompt user for files to preserve and delete all
                         others; important: under particular circumstances,
@@ -95,6 +103,7 @@ option is specified (delete, summarize, link, dedupe, etc.)
                         linked files are treated as non-duplicates for safety
  -i --reverse           reverse (invert) the match sort order
  -I --isolate           files in the same specified directory won't match
+ -j --json              produce JSON (machine-readable) output
  -l --linksoft          make relative symlinks for duplicates w/o prompting
  -L --linkhard          hard link all duplicate files without prompting
                         Windows allows a maximum of 1023 hard links per file
@@ -118,34 +127,56 @@ option is specified (delete, summarize, link, dedupe, etc.)
                         the end of the option, manpage for more details)
  -s --symlinks          follow symlinks
  -S --size              show size of duplicate files
+ -t --nochangecheck     disable security check for file changes (aka TOCTTOU)
  -T --partial-only      match based on partial hashes only. WARNING:
                         EXTREMELY DANGEROUS paired with destructive actions!
                         -T must be specified twice to work. Read the manual!
  -v --version           display jdupes version and license information
  -x --xsize=SIZE        exclude files of size < SIZE bytes from consideration
     --xsize=+SIZE       '+' specified before SIZE, exclude size > SIZE
+ -X --extfilter=spec:x  filter files based on specified criteria
+                        specs: size+-=
+                        Filters are cumulative: -X spec:ab -X spec:cd
  -X --exclude=spec:info exclude files based on specified criteria
                         specs: size+-=
                         Exclusions are cumulative: -X dir:abc -X dir:efg
  -z --zeromatch         consider zero-length files to be duplicates
  -Z --softabort         If the user aborts (i.e. CTRL-C) act on matches so far
                         You can send SIGUSR1 to the program to toggle this
+```
 
 For sizes, K/M/G/T/P/E[B|iB] suffixes can be used (case-insensitive)
 
-The -n/--noempty option was removed for safety. Matching zero-length files as
-duplicates now requires explicit use of the -z/--zeromatch option instead.
+The `-t`/`-nochangecheck` option disables file change checks during/after
+scanning. This opens a security vulnerability that is called a TOCTTOU (time
+of check to time of use) vulnerability. The program normally runs checks
+immediately before scanning or taking action upon a file to see if the file
+has changed in some way since it was last checked. With this option enabled,
+the program will not run any of these checks, making the algorithm slightly
+faster, but also increasing the risk that the program scans a file, the file
+is changed after the scan, and the program still acts like the file was in
+its previous state. This is particularly dangerous when considering actions
+such as linking and deleting. In the most extreme case, a file could be
+deleted during scanning but match other files prior to that deletion; if the
+file is the first in the list of duplicates and auto-delete is used, all of
+the remaining matched files will be deleted as well. This option was added
+due to user reports of some filesystems (particularly network filesystems)
+changing the reported file information inappropriately, rendering the entire
+program unusable on such filesystems.
+
+The `-n`/`--noempty` option was removed for safety. Matching zero-length files as
+duplicates now requires explicit use of the `-z`/`--zeromatch` option instead.
 
 Duplicate files are listed together in groups with each file displayed on a
-Separate line. The groups are then separated from each other by blank lines.
+separate line. The groups are then separated from each other by blank lines.
 
-The -s/--symlinks option will treat symlinked files as regular files, but
+The `-s`/`--symlinks` option will treat symlinked files as regular files, but
 direct symlinks will be treated as if they are hard linked files and the
 -H/--hardlinks option will apply to them in the same manner.
 
-When using -d or --delete, care should be taken to insure against accidental
+When using `-d` or `--delete`, care should be taken to insure against accidental
 data loss. While no information will be immediately lost, using this option
-together with -s or --symlink can lead to confusing information being
+together with `-s` or `--symlink` can lead to confusing information being
 presented to the user when prompted for files to preserve. Specifically, a
 user could accidentally preserve a symlink while deleting the file it points
 to. A similar problem arises when specifying a particular directory more
@@ -153,46 +184,46 @@ than once. All files within that directory will be listed as their own
 duplicates, leading to data loss should a user preserve a file without its
 "duplicate" (the file itself!)
 
-Using -1 or --one-file-system prevents matches that cross filesystems, but a
+Using `-1` or `--one-file-system` prevents matches that cross filesystems, but a
 more relaxed form of this option may be added that allows cross-matching for
 all filesystems that each parameter is present on.
 
--Z or --softabort used to be --hardabort in jdupes prior to v1.5 and had the
+`-Z` or `--softabort` used to be `--hardabort` in jdupes prior to v1.5 and had the
 opposite behavior. Defaulting to taking action on abort is probably not what
 most users would expect. The decision to invert rather than reassign to a
 different option was made because this feature was still fairly new at the
 time of the change.
 
 On non-Windows platforms that support SIGUSR1, you can toggle the state of
-the -Z option by sending a SIGUSR1 to the program. This is handy if you want
-to abort jdupes, didn't specify -Z, and changed your mind and don't want to
-lose all the work that was done so far. Just do 'killall -USR1 jdupes' and
-you wll be able to abort with -Z. This works in reverse: if you want to
-prevent a -Z from happening, a SIGUSR1 will toggle it back off. That's a lot
+the `-Z` option by sending a SIGUSR1 to the program. This is handy if you want
+to abort jdupes, didn't specify `-Z`, and changed your mind and don't want to
+lose all the work that was done so far. Just do '`killall -USR1 jdupes`' and
+you wll be able to abort with `-Z`. This works in reverse: if you want to
+prevent a `-Z` from happening, a SIGUSR1 will toggle it back off. That's a lot
 less useful because you can just stop and kill the program to get the same
 effect, but it's there if you want it for some reason. Sending the signal
 twice while the program is stopped will behave as if it was only sent once,
 as per normal POSIX signal behavior.
 
-The -O or --paramorder option allows the user greater control over wha
-appears in the first position of a match set, specifically for keeping the -N
+The `-O` or `--paramorder` option allows the user greater control over what
+appears in the first position of a match set, specifically for keeping the `-N`
 option from deleting all but one file in a set in a seemingly random way. All
 directories specified on the command line will be used as the sorting order
-of result sets first, followed by the sorting algorithm set by the -o or
---order option. This means that the order of all match pairs for a single
+of result sets first, followed by the sorting algorithm set by the `-o` or
+`--order` option. This means that the order of all match pairs for a single
 directory specification will retain the old sorting behavior even if this
 option is specified.
 
-When used together with options -s or --symlink, a user could accidentally
+When used together with options `-s` or `--symlink`, a user could accidentally
 preserve a symlink while deleting the file it points to.
 
-The -Q or --quick option only reads each file once, hashes it, and performs
+The `-Q` or `--quick option` only reads each file once, hashes it, and performs
 comparisons based solely on the hashes. There is a small but significant risk
 of a hash collision which is the purpose of the failsafe byte-for-byte
 comparison that this option explicitly bypasses. Do not use it on ANY data
 set for which any amount of data loss is unacceptable. You have been warned!
 
-The -T or --partial-only option produces results based on a hash of the first
+The `-T` or `--partial-only` option produces results based on a hash of the first
 block of file data in each file, ignoring everything else in the file.
 Partial hash checks have always been an important exclusion step in the
 jdupes algorithm, usually hashing the first 4096 bytes of data and allowing
@@ -209,13 +240,13 @@ actions on data based on the matching output. Because of the potential for
 massive data destruction, this option MUST BE SPECIFIED TWICE to take effect
 and will error out if it is only specified once.
 
-The -I/--isolate option attempts to block matches that are contained in
+The `-I`/`--isolate` option attempts to block matches that are contained in
 the same specified directory parameter on the command line. Due to the
 underlying nature of the jdupes algorithm, a lot of matches will be
 blocked by this option that probably should not be. This code could use
 improvement.
 
-The -C/--chunksize option overrides the size of the I/O "chunk" used for all
+The `-C`/`--chunksize` option overrides the size of the I/O "chunk" used for all
 file operations. Larger numbers will increase the amount of data read at
 once from each file and may improve performance when scanning lots of files
 that are larger than the default chunk size by reducing "thrashing" of the
@@ -229,7 +260,7 @@ of the algorithm and generally good all-around performance. Feel free to
 experiment with the number on your data set and report your experiences
 (preferably with benchmarks and info on your data set.)
 
-Using -P/--print will cause the program to print extra information that
+Using `-P`/`--print` will cause the program to print extra information that
 may be useful but will pollute the output in a way that makes scripted
 handling difficult. Its current purpose is to reveal more information about
 the file matching process by printing match pairs that pass certain steps
@@ -242,15 +273,15 @@ Hard and soft (symbolic) linking status symbols and behavior
 A set of arrows are used in file linking to show what action was taken on
 each link candidate. These arrows are as follows:
 
-----> File was hard linked to the first file in the duplicate chain
+`---->` File was hard linked to the first file in the duplicate chain
 
--@@-> File was symlinked to the first file in the chain
+`-@@->` File was symlinked to the first file in the chain
 
--==-> Already a hard link to the first file in the chain
+`-==->` Already a hard link to the first file in the chain
 
--//-> File linking failed due to an error during the linking process
+`-//->` File linking failed due to an error during the linking process
 
-If your data set has linked files and you do not use -H to always consider
+If your data set has linked files and you do not use `-H` to always consider
 them as duplicates, you may still see linked files appear together in match
 sets. This is caused by a separate file that matches with linked files
 independently and is the correct behavior. See notes below on the "triangle
@@ -259,11 +290,6 @@ problem" in jdupes for technical details.
 
 Microsoft Windows platform-specific notes
 --------------------------------------------------------------------------
-The Windows port does not support Unicode, only ANSI file names. This is
-because Unicode support on Windows is difficult to add to existing code
-without making it very messy or breaking things. Support is eventually
-planned for Unicode on Windows.
-
 Windows has a hard limit of 1024 hard links per file. There is no way to
 change this. The documentation for CreateHardLink() states: "The maximum
 number of hard links that can be created with this function is 1023 per
@@ -274,32 +300,36 @@ file. If more than 1023 links are created for a file, an error results."
 The current jdupes algorithm's "triangle problem"
 --------------------------------------------------------------------------
 Pairs of files are excluded individually based on how the two files compare.
-For example, if --hardlinks is not specified then two files which are hard
+For example, if `--hardlinks` is not specified then two files which are hard
 linked will not match one another for duplicate scanning purposes. The
 problem with only examining files in pairs is that certain circumstances
 will lead to the exclusion being overridden.
 
 Let's say we have three files with identical contents:
 
+```
 a/file1
 a/file2
 a/file3
+```
 
-and 'a/file1' is linked to 'a/file3'. Here's how 'jdupes a/' sees them:
+and `a/file1` is linked to `a/file3`. Here's how `jdupes a/` sees them:
 
 ---
-Are 'a/file1' and 'a/file2' matches? Yes
-[point a/file1->duplicates to a/file2]
+	Are 'a/file1' and 'a/file2' matches? Yes
+	[point a/file1->duplicates to a/file2]
 
-Are 'a/file1' and 'a/file3' matches? No (hard linked already, -H off)
+	Are 'a/file1' and 'a/file3' matches? No (hard linked already, `-H` off)
 
-Are 'a/file2' and 'a/file3' matches? Yes
-[point a/file2->duplicates to a/file3]
+	Are 'a/file2' and 'a/file3' matches? Yes
+	[point a/file2->duplicates to a/file3]
 ---
 
 Now you have the following duplicate list:
 
+```
 a/file1->duplicates ==> a/file2->duplicates ==> a/file3
+```
 
 The solution is to split match sets into multiple sets, but doing this
 will also remove the guarantee that files will only ever appear in one
@@ -317,25 +347,24 @@ http://rmlint.readthedocs.io/en/latest/cautions.html
 
 Here's a breakdown of how jdupes addresses each of the items listed.
 
-"Backup your data"
-"Measure twice, cut once"
+### "Backup your data"/"Measure twice, cut once"
 These guidelines are for the user of duplicate scanning software, not the
 software itself. Back up your files regularly. Use jdupes to print a list
 of what is found as duplicated and check that list very carefully before
 automatically deleting the files.
 
-"Beware of unusual filename characters"
-The only character that poses a concern in jdupes is a newline '\n' and
+### "Beware of unusual filename characters"
+The only character that poses a concern in jdupes is a newline `\n` and
 that is only a problem because the duplicate set printer uses them to
 separate file names. Actions taken by jdupes are not parsed like a
 command line, so spaces and other weird characters in names aren't a
 problem. Escaping the names properly if acting on the printed output is a
 problem for the user's shell script or other external program.
 
-"Consider safe removal options"
+### "Consider safe removal options"
 This is also an exercise for the user.
 
-"Traversal Robustness"
+### "Traversal Robustness"
 jdupes tracks each directory traversed by dev:inode pair to avoid adding
 the contents of the same directory twice. This prevents the user from
 being able to register all of their files twice by duplicating an entry
@@ -344,7 +373,7 @@ weren't already followed earlier. Files are renamed to a temporary name
 before any linking is done and if the link operation fails they are renamed
 back to the original name.
 
-"Collision Robustness"
+### "Collision Robustness"
 jdupes uses jodyhash for file data hashing. This hash is extremely fast
 with a low collision rate, but it still encounters collisions as any hash
 function will ("secure" or otherwise) due to the pigeonhole principle. This
@@ -363,12 +392,12 @@ to be at least 256 pairs of data streams that causes a collision once any
 of the data streams being hashed for comparison is 65 bytes (520 bits) or
 larger.
 
-"Unusual Characters Robustness"
+### "Unusual Characters Robustness"
 jdupes does not protect the user from putting ASCII control characters in
 their file names; they will mangle the output if printed, but they can
 still be operated upon by the actions (delete, link, etc.) in jdupes.
 
-"Seek Thrash Robustness"
+### "Seek Thrash Robustness"
 jdupes uses an I/O chunk size that is optimized for reading as much as
 possible from disk at once to take advantage of high sequential read
 speeds in traditional rotating media drives while balancing against the
@@ -380,7 +409,7 @@ large buffers. jdupes is benchmarked periodically to make sure that the
 chosen I/O chunk size is the best compromise for a wide variety of data
 sets.
 
-"Memory Usage Robustness"
+### "Memory Usage Robustness"
 This is a very subjective concern considering that even a cell phone in
 someone's pocket has at least 1GB of RAM, however it still applies in the
 embedded device world where 32MB of RAM might be all that you can have.
@@ -390,17 +419,17 @@ A low memory mode can be chosen at compile time to reduce overall memory
 usage with a small performance penalty.
 
 
-Contact Information
+Contact information
 --------------------------------------------------------------------------
 For all jdupes inquiries, contact Jody Bruchon <jody@jodybruchon.com>
 Please DO NOT contact Adrian Lopez about issues with jdupes.
 
 
-Legal Information and Software License
+Legal information and software license
 --------------------------------------------------------------------------
-jdupes is Copyright (C) 2015-2018 by Jody Bruchon <jody@jodybruchon.com>
-Derived from the original 'fdupes' (C) 1999-2018 by Adrian Lopez
-Includes other code libraries which are (C) 2015-2018 by Jody Bruchon
+jdupes is Copyright (C) 2015-2020 by Jody Bruchon <jody@jodybruchon.com>
+Derived from the original 'fdupes' 1.51 (C) 1999-2014 by Adrian Lopez
+Includes other code libraries which are (C) 2015-2020 by Jody Bruchon
 
 The MIT License
 

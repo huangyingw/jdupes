@@ -1,3 +1,41 @@
+jdupes 1.14.0
+
+- Long option --exclude is deprecated and renamed --extfilter
+- BTRFS compile options have been generalized to dedupe (see README)
+- Fix a bug in 1.13.3 where many options caused an inappropriate exit
+
+jdupes 1.13.3
+
+- Fix the behavior of the -I/--isolate option
+- Move BTRFS-specific dedupe interfaces to general Linux 4.5+ interfaces
+- Change BTRFS compilation flag name (see README)
+- Fix FS dedupe only working on the first 16 MiB of files
+- Add FS dedupe static header for when this header is mising
+- Add EXE version info for generated Windows executables
+- Correct several copyright dates and comments
+
+jdupes 1.13.2
+
+- Fix Unicode and escaped in JSON output
+
+jdupes 1.13.1
+
+- Fix an incorrect NULL pointer check
+
+jdupes 1.13
+
+- Add new option -j/--json for JSON (machine-readable) output
+- /usr/local is now the default PREFIX in Makefile
+- Minor performance optimizations
+- A few minor bug fixes
+
+jdupes 1.12
+
+- Small reductions in memory usage
+- Add "standalone" jdupes C file which has no external requirements
+- Add ability to toggle -Z with a USR1 signal (not available on Windows)
+- Add -t/-no-tocttou option to disable file change safety checks
+
 jdupes 1.11.1
 
 - Disable build date embedding by default to make reproducible builds easier

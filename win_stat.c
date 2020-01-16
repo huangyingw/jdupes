@@ -1,7 +1,7 @@
 /*
  * Windows-native code for getting stat()-like information
  *
- * Copyright (C) 2018 by Jody Bruchon <jody@jodybruchon.com>
+ * Copyright (C) 2016-2020 by Jody Bruchon <jody@jodybruchon.com>
  * Released under The MIT License
  */
 
@@ -13,7 +13,8 @@
 #include "win_stat.h"
 #include <stdint.h>
 
-#include "jdupes.h"
+#define WPATH_MAX 8192
+#define M2W(a,b) MultiByteToWideChar(CP_UTF8, 0, a, -1, (LPWSTR)b, WPATH_MAX)
 
 /* Convert NT epoch to UNIX epoch */
 static time_t nttime_to_unixtime(const uint64_t * const restrict timestamp)
@@ -35,6 +36,8 @@ int win_stat(const char * const filename, struct winstat * const restrict buf)
   uint64_t timetemp;
 
 #ifdef UNICODE
+  static wchar_t wname2[WPATH_MAX];
+
   if (!buf) return -127;
   if (!M2W(filename,wname2)) return -126;
   hFile = CreateFileW(wname2, 0, FILE_SHARE_READ, NULL, OPEN_EXISTING,
@@ -48,17 +51,17 @@ int win_stat(const char * const filename, struct winstat * const restrict buf)
   if (hFile == INVALID_HANDLE_VALUE) goto failure;
   if (!GetFileInformationByHandle(hFile, &bhfi)) goto failure2;
 
-  buf->inode = ((uint64_t)(bhfi.nFileIndexHigh) << 32) + (uint64_t)bhfi.nFileIndexLow;
-  buf->size = ((uint64_t)(bhfi.nFileSizeHigh) << 32) + (uint64_t)bhfi.nFileSizeLow;
+  buf->st_ino = ((uint64_t)(bhfi.nFileIndexHigh) << 32) + (uint64_t)bhfi.nFileIndexLow;
+  buf->st_size = ((uint64_t)(bhfi.nFileSizeHigh) << 32) + (uint64_t)bhfi.nFileSizeLow;
   timetemp = ((uint64_t)(bhfi.ftCreationTime.dwHighDateTime) << 32) + bhfi.ftCreationTime.dwLowDateTime;
-  buf->ctime = nttime_to_unixtime(&timetemp);
+  buf->st_ctime = nttime_to_unixtime(&timetemp);
   timetemp = ((uint64_t)(bhfi.ftLastWriteTime.dwHighDateTime) << 32) + bhfi.ftLastWriteTime.dwLowDateTime;
-  buf->mtime = nttime_to_unixtime(&timetemp);
+  buf->st_mtime = nttime_to_unixtime(&timetemp);
   timetemp = ((uint64_t)(bhfi.ftLastAccessTime.dwHighDateTime) << 32) + bhfi.ftLastAccessTime.dwLowDateTime;
-  buf->atime = nttime_to_unixtime(&timetemp);
-  buf->device = (uint32_t)bhfi.dwVolumeSerialNumber;
-  buf->nlink = (uint32_t)bhfi.nNumberOfLinks;
-  buf->mode = (uint32_t)bhfi.dwFileAttributes;
+  buf->st_atime = nttime_to_unixtime(&timetemp);
+  buf->st_dev = (uint32_t)bhfi.dwVolumeSerialNumber;
+  buf->st_nlink = (uint32_t)bhfi.nNumberOfLinks;
+  buf->st_mode = (uint32_t)bhfi.dwFileAttributes;
 
   CloseHandle(hFile);
   return 0;

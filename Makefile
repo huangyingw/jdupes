@@ -12,9 +12,9 @@ PREFIX = /usr/local
 # To disable long options, uncomment the following line.
 #CFLAGS += -DOMIT_GETOPT_LONG
 
-# Uncomment for Linux with BTRFS support. Needed for -B/--dedupe.
-# This can also be enabled at build time: 'make ENABLE_BTRFS=1'
-#CFLAGS += -DENABLE_BTRFS
+# Uncomment for Linux for -B/--dedupe.
+# This can also be enabled at build time: 'make ENABLE_DEDUPE=1'
+#CFLAGS += -DENABLE_DEDUPE
 
 # Uncomment for low memory usage at the expense of speed and features
 # This can be enabled at build time: 'make LOW_MEMORY=1'
@@ -55,6 +55,7 @@ CC ?= gcc
 COMPILER_OPTIONS = -Wall -Wextra -Wwrite-strings -Wcast-align -Wstrict-aliasing -Wstrict-overflow -Wstrict-prototypes -Wpointer-arith -Wundef
 COMPILER_OPTIONS += -Wshadow -Wfloat-equal -Wstrict-overflow=5 -Waggregate-return -Wcast-qual -Wswitch-default -Wswitch-enum -Wconversion -Wunreachable-code -Wformat=2 -Winit-self
 COMPILER_OPTIONS += -std=gnu99 -O2 -g -D_FILE_OFFSET_BITS=64 -fstrict-aliasing -pipe
+COMPILER_OPTIONS += -DSMA_MAX_FREE=11
 
 #####################################################################
 # no need to modify anything beyond this point                      #
@@ -74,17 +75,19 @@ COMPILER_OPTIONS += -DLOUD_DEBUG
 endif
 ifdef DEBUG
 COMPILER_OPTIONS += -DDEBUG
+else
+COMPILER_OPTIONS += -DNDEBUG
 endif
 ifdef HARDEN
 COMPILER_OPTIONS += -Wformat -Wformat-security -D_FORTIFY_SOURCE=2 -fstack-protector-strong -fPIE -fpie -Wl,-z,relro -Wl,-z,now
 endif
 
-# Catch someone trying to enable BTRFS in flags and turn on ENABLE_BTRFS
-ifneq (,$(findstring DENABLE_BTRFS,$(CFLAGS)))
-	ENABLE_BTRFS=1
+# Catch someone trying to enable BTRFS in flags and turn on ENABLE_DEDUPE
+ifneq (,$(findstring DENABLE_BTRFS,$(CFLAGS) $(CFLAGS_EXTRA)))
+	ENABLE_DEDUPE=1
 endif
-ifneq (,$(findstring DENABLE_BTRFS,$(CFLAGS_EXTRA)))
-	ENABLE_BTRFS=1
+ifneq (,$(findstring DENABLE_DEDUPE,$(CFLAGS) $(CFLAGS_EXTRA)))
+	ENABLE_DEDUPE=1
 endif
 
 # MinGW needs this for printf() conversions to work
@@ -96,16 +99,28 @@ ifndef NO_UNICODE
 endif
 	COMPILER_OPTIONS += -D__USE_MINGW_ANSI_STDIO=1 -DON_WINDOWS=1
 	OBJS += win_stat.o winres.o
-	override undefine ENABLE_BTRFS
+	override undefine ENABLE_DEDUPE
 endif
 
-# New BTRFS support option
+# Compatibility mappings for dedupe feature
 ifdef ENABLE_BTRFS
-COMPILER_OPTIONS += -DENABLE_BTRFS
+ENABLE_DEDUPE=1
+endif
+ifdef STATIC_BTRFS_H
+STATIC_DEDUPE_H=1
+endif
+
+# Dedupe feature (originally only BTRFS, now generalized)
+ifdef ENABLE_DEDUPE
+COMPILER_OPTIONS += -DENABLE_DEDUPE
 OBJS += act_dedupefiles.o
 else
 OBJS_CLEAN += act_dedupefiles.o
 endif
+ifdef STATIC_DEDUPE_H
+COMPILER_OPTIONS += -DSTATIC_DEDUPE_H
+endif
+
 # Low memory mode
 ifdef LOW_MEMORY
 COMPILER_OPTIONS += -DLOW_MEMORY -DSMA_PAGE_SIZE=32768 -DCHUNK_SIZE=16384 -DNO_HARDLINKS -DNO_USER_ORDER
@@ -122,7 +137,7 @@ INSTALL_DATA    = $(INSTALL) -m 0644
 
 OBJS += jdupes.o jody_paths.o jody_sort.o jody_win_unicode.o string_malloc.o
 OBJS += jody_cacheinfo.o
-OBJS += act_deletefiles.o act_linkfiles.o act_printmatches.o act_summarize.o
+OBJS += act_deletefiles.o act_linkfiles.o act_printmatches.o act_summarize.o act_printjson.o
 OBJS += xxhash.o
 OBJS += $(ADDITIONAL_OBJECTS)
 
@@ -134,6 +149,7 @@ $(PROGRAM_NAME): $(OBJS)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $(PROGRAM_NAME) $(OBJS)
 
 winres.o : winres.rc winres.manifest.xml
+	./tune_winres.sh
 	windres winres.rc winres.o
 
 standalone: jdupes-standalone

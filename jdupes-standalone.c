@@ -1,5 +1,5 @@
-/* jdupes (C) 2015-2018 Jody Bruchon <jody@jodybruchon.com>
-   Derived from fdupes (C) 1999-2018 Adrian Lopez
+/* jdupes (C) 2015-2020 Jody Bruchon <jody@jodybruchon.com>
+   Forked from fdupes 1.51 (C) 1999-2014 Adrian Lopez
 
    Permission is hereby granted, free of charge, to any person
    obtaining a copy of this software and associated documentation files
@@ -20,6 +20,9 @@
    TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
    SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE. */
 
+#define VER "1.13.1"
+#define VERDATE "2020-06-10"
+
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -37,12 +40,32 @@
 #include <sys/time.h>
 #include <sys/types.h>
 #include <unistd.h>
-/* Optional btrfs support */
-#ifdef ENABLE_BTRFS
- #include <linux/btrfs.h>
+/* Optional FIDEDUPERANGE support */
+#ifdef ENABLE_DEDUPE
+ #ifndef __linux__
+  #error "Filesystem-managed deduplication only available for Linux."
+ #endif /* __linux__ */
  #include <sys/ioctl.h>
  #include <sys/utsname.h>
-#endif
+ #ifdef STATIC_BTRFS_H
+  /* Static BTRFS header */
+  #include <linux/types.h>
+  #define BTRFS_IOCTL_MAGIC 0x94
+  #define BTRFS_DEVICE_PATH_NAME_MAX 1024
+  #define FILE_DEDUPE_RANGE_DIFFERS	1
+  struct file_dedupe_range_info {
+   __s64 fd; __u64 logical_offset; __u64 bytes_deduped; __s32 status; __u32 reserved;
+  };
+  struct file_dedupe_range {
+   __u64 logical_offset; __u64 length; __u16 dest_count; __u16 reserved1;
+   __u32 reserved2; struct file_dedupe_range_info info[0];
+  };
+  #define FIDEDUPERANGE _IOWR(BTRFS_IOCTL_MAGIC, 54, struct file_dedupe_range)
+  /* Static BTRFS header */
+ #else
+  #include <linux/fs.h>
+ #endif /* STATIC_BTRFS_H */
+#endif /* ENABLE_DEDUPE */
 
 #define JODY_HASH_WIDTH 32
 typedef uint32_t jodyhash_t;
@@ -57,44 +80,49 @@ typedef mode_t jdupes_mode_t;
 #define CLEARFLAG(a,b) (a &= (~b))
 
 /* Behavior modification flags */
-#define F_RECURSE		0x00000001U
-#define F_HIDEPROGRESS		0x00000002U
-#define F_SOFTABORT		0x00000004U
-#define F_FOLLOWLINKS		0x00000008U
-#define F_DELETEFILES		0x00000010U
-#define F_INCLUDEEMPTY		0x00000020U
-#define F_CONSIDERHARDLINKS	0x00000040U
-#define F_SHOWSIZE		0x00000080U
-#define F_OMITFIRST		0x00000100U
-#define F_RECURSEAFTER		0x00000200U
-#define F_NOPROMPT		0x00000400U
-#define F_SUMMARIZEMATCHES	0x00000800U
-#define F_EXCLUDEHIDDEN		0x00001000U
-#define F_PERMISSIONS		0x00002000U
-#define F_HARDLINKFILES		0x00004000U
-#define F_EXCLUDESIZE		0x00008000U
-#define F_QUICKCOMPARE		0x00010000U
-#define F_USEPARAMORDER		0x00020000U
-#define F_DEDUPEFILES		0x00040000U
-#define F_REVERSESORT		0x00080000U
-#define F_ISOLATE		0x00100000U
-#define F_MAKESYMLINKS		0x00200000U
-#define F_PRINTMATCHES		0x00400000U
-#define F_ONEFS			0x00800000U
-#define F_PRINTNULL		0x01000000U
-#define F_PARTIALONLY		0x02000000U
+#define F_RECURSE		(1U << 0)
+#define F_HIDEPROGRESS		(1U << 1)
+#define F_SOFTABORT		(1U << 2)
+#define F_FOLLOWLINKS		(1U << 3)
+#define F_DELETEFILES		(1U << 4)
+#define F_INCLUDEEMPTY		(1U << 5)
+#define F_CONSIDERHARDLINKS	(1U << 6)
+#define F_SHOWSIZE		(1U << 7)
+#define F_OMITFIRST		(1U << 8)
+#define F_RECURSEAFTER		(1U << 9)
+#define F_NOPROMPT		(1U << 10)
+#define F_SUMMARIZEMATCHES	(1U << 11)
+#define F_EXCLUDEHIDDEN		(1U << 12)
+#define F_PERMISSIONS		(1U << 13)
+#define F_HARDLINKFILES		(1U << 14)
+#define F_EXCLUDESIZE		(1U << 15)
+#define F_QUICKCOMPARE		(1U << 16)
+#define F_USEPARAMORDER		(1U << 17)
+#define F_DEDUPEFILES		(1U << 18)
+#define F_REVERSESORT		(1U << 19)
+#define F_ISOLATE		(1U << 20)
+#define F_MAKESYMLINKS		(1U << 21)
+#define F_PRINTMATCHES		(1U << 22)
+#define F_ONEFS			(1U << 23)
+#define F_PRINTNULL		(1U << 24)
+#define F_PARTIALONLY		(1U << 25)
+#define F_NOCHANGECHECK		(1U << 26)
+#define F_PRINTJSON		(1U << 27)
+
+#define F_LOUD			(1U << 30)
+#define F_DEBUG			(1U << 31)
 
 /* Per-file true/false flags */
-#define F_VALID_STAT		0x00000001U
-#define F_HASH_PARTIAL		0x00000002U
-#define F_HASH_FULL		0x00000004U
-#define F_HAS_DUPES		0x00000008U
-#define F_IS_SYMLINK		0x00000010U
+#define F_VALID_STAT		(1U << 0)
+#define F_HASH_PARTIAL		(1U << 1)
+#define F_HASH_FULL		(1U << 2)
+#define F_HAS_DUPES		(1U << 3)
+#define F_IS_SYMLINK		(1U << 4)
 
 /* Extra print flags */
-#define P_PARTIAL		0x00000001U
-#define P_EARLYMATCH		0x00000002U
-#define P_FULLHASH		0x00000004U
+#define P_PARTIAL		(1U << 0)
+#define P_EARLYMATCH		(1U << 1)
+#define P_FULLHASH		(1U << 2)
 
 typedef enum {
   ORDER_NAME = 0,
@@ -285,7 +313,6 @@ void sighandler(const int signum)
 }
 
 
-#ifndef ON_WINDOWS
 void sigusr1(const int signum)
 {
   (void)signum;
@@ -293,7 +320,6 @@ void sigusr1(const int signum)
   else CLEARFLAG(flags, F_SOFTABORT);
   return;
 }
-#endif
 
 
 /* Out of memory */
@@ -315,7 +341,7 @@ static void nullptr(const char * restrict func)
 
 
 /* Jody Bruchon's fast hashing function
- * Copyright (C) 2014-2017 by Jody Bruchon <jody@jodybruchon.com>
+ * Copyright (C) 2014-2020 by Jody Bruchon <jody@jodybruchon.com>
  * Released under The MIT License
  */
 
@@ -456,6 +482,9 @@ static void update_progress(const char * const restrict msg, const int file_perc
  * Returns 1 if changed, 0 if not changed, negative if error */
 static int file_has_changed(file_t * const restrict file)
 {
+  /* If -t/--nochangecheck specified then completely bypass this code */
+  if (ISFLAG(flags, F_NOCHANGECHECK)) return 0;
+
   if (file == NULL || file->d_name == NULL) nullptr("file_has_changed()");
 
   if (!ISFLAG(file->flags, F_VALID_STAT)) return -66;
@@ -541,12 +570,12 @@ static void add_exclude(const char *option)
   if (exclude_head != NULL) {
     /* Add to end of exclusion stack if head is present */
     while (excl->next != NULL) excl = excl->next;
-    excl->next = malloc(sizeof(struct exclude) + strlen(p));
+    excl->next = malloc(sizeof(struct exclude) + strlen(p) + 1);
     if (excl->next == NULL) oom("add_exclude alloc");
     excl = excl->next;
   } else {
     /* Allocate exclude_head if no exclusions exist yet */
-    exclude_head = malloc(sizeof(struct exclude) + strlen(p));
+    exclude_head = malloc(sizeof(struct exclude) + strlen(p) + 1);
     if (exclude_head == NULL) oom("add_exclude alloc");
     excl = exclude_head;
   }
@@ -571,7 +600,8 @@ static void add_exclude(const char *option)
   } else {
     /* Exclude uses string data; just copy it */
     excl->size = 0;
-    strcpy(excl->param, p);
+    if (*p != '\0') strcpy(excl->param, p);
+    else *(excl->param) = '\0';
   }
 
   free(opt);
@@ -609,18 +639,25 @@ static int getdirstats(const char * const restrict name,
  *  0 if all condition checks pass
  * -1 or 1 on compare result less/more
  * -2 on an absolute exclusion condition met
- *  2 on an absolute match condition met */
+ *  2 on an absolute match condition met
+ * -3 on exclusion due to isolation
+ * -4 on exlusion due to same filesystem
+ * -5 on exclusion due to permissions */
 static int check_conditions(const file_t * const restrict file1, const file_t * const restrict file2)
 {
   if (file1 == NULL || file2 == NULL || file1->d_name == NULL || file2->d_name == NULL) nullptr("check_conditions()");
 
+  /* Exclude files that are not the same size */
+  if (file1->size > file2->size) return -1;
+  if (file1->size < file2->size) return 1;
+
 #ifndef NO_USER_ORDER
   /* Exclude based on -I/--isolate */
-  if (ISFLAG(flags, F_ISOLATE) && (file1->user_order == file2->user_order)) return -1;
+  if (ISFLAG(flags, F_ISOLATE) && (file1->user_order == file2->user_order)) return -3;
 #endif /* NO_USER_ORDER */
 
   /* Exclude based on -1/--one-file-system */
-  if (ISFLAG(flags, F_ONEFS) && (file1->device != file2->device)) return -1;
+  if (ISFLAG(flags, F_ONEFS) && (file1->device != file2->device)) return -4;
 
    /* Exclude files by permissions if requested */
   if (ISFLAG(flags, F_PERMISSIONS) &&
@@ -630,7 +667,7 @@ static int check_conditions(const file_t * const restrict file1, const file_t * 
           || file1->gid != file2->gid
 #endif
           )) {
-    return -1;
+    return -5;
   }
 
   /* Hard link and symlink + '-s' check */
@@ -640,10 +677,6 @@ static int check_conditions(const file_t * const restrict file1, const file_t * 
     else return -2;
   }
 #endif
-
-  /* Exclude files that are not the same size */
-  if (file1->size > file2->size) return -1;
-  if (file1->size < file2->size) return 1;
 
   /* Fall through: all checks passed */
   return 0;
@@ -729,6 +762,17 @@ static struct travdone *travdone_alloc(const jdupes_ino_t inode, const dev_t dev
 }
 
 
+/* De-allocate the travdone tree */
+static void travdone_free(struct travdone * const restrict cur)
+{
+  if (cur == NULL) return;
+  if (cur->left != NULL) travdone_free(cur->left);
+  if (cur->right != NULL) travdone_free(cur->right);
+  free(cur);
+  return;
+}
+
+
 /* Add a single file to the file tree */
 static inline file_t *grokfile(const char * const restrict name, file_t * restrict * const restrict filelistp)
 {
@@ -780,7 +824,7 @@ static unsigned int get_max_dupes(const file_t *files, unsigned int * const rest
 
 
 /* BTRFS deduplication of file blocks */
-#ifdef ENABLE_BTRFS
+#ifdef ENABLE_DEDUPE
 
 /* Message to append to BTRFS warnings based on write permissions */
 static const char *readonly_msg[] = {
@@ -791,8 +835,8 @@ static const char *readonly_msg[] = {
 static char *dedupeerrstr(int err) {
 
   tempname[sizeof(tempname)-1] = '\0';
-  if (err == BTRFS_SAME_DATA_DIFFERS) {
-    snprintf(tempname, sizeof(tempname), "BTRFS_SAME_DATA_DIFFERS (data modified in the meantime?)");
+  if (err == FILE_DEDUPE_RANGE_DIFFERS) {
+    snprintf(tempname, sizeof(tempname), "FILE_DEDUPE_RANGE_DIFFERS (data modified in the meantime?)");
     return tempname;
   } else if (err < 0) {
     return strerror(-err);
@@ -805,7 +849,7 @@ static char *dedupeerrstr(int err) {
 static void dedupefiles(file_t * restrict files)
 {
   struct utsname utsname;
-  struct btrfs_ioctl_same_args *same;
+  struct file_dedupe_range *same;
   char **dupe_filenames; /* maps to same->info indices */
 
   file_t *curfile;
@@ -833,8 +877,8 @@ static void dedupefiles(file_t * restrict files)
     fprintf(stderr, "Ask the program author to add this feature if you really need it. Exiting!\n");
     exit(EXIT_FAILURE);
   }
-  same = calloc(sizeof(struct btrfs_ioctl_same_args) +
-                sizeof(struct btrfs_ioctl_same_extent_info) * max_dupes, 1);
+  same = calloc(sizeof(struct file_dedupe_range) +
+                sizeof(struct file_dedupe_range_info) * max_dupes, 1);
   dupe_filenames = malloc(max_dupes * sizeof(char *));
   if (!same || !dupe_filenames) oom("dedupefiles() structures");
 
@@ -854,7 +898,7 @@ static void dedupefiles(file_t * restrict files)
 
         /* Never allow hard links to be passed to dedupe */
         if (curfile->device == files->device && curfile->inode == files->inode) continue;
-        
+
         dupe_filenames[cur_info] = curfile->d_name;
         readonly = 0;
         if (access(curfile->d_name, W_OK) != 0) readonly = 1;
@@ -931,7 +975,7 @@ cleanup:
   free(dupe_filenames);
   return;
 }
-#endif /* ENABLE_BTRFS */
+#endif /* ENABLE_DEDUPE */
 
 
 /* Delete duplicate files automatically or interactively */
@@ -1261,8 +1305,93 @@ static void linkfiles(file_t *files, const int hard)
 static int fwprint(FILE * const restrict stream, const char * const restrict str, const int cr)
 {
   if (cr == 2) return fprintf(stream, "%s%c", str, 0);
-  else return fprintf(stream, "%s%s", str, cr == 1 ? "\n" : "");		
+  else return fprintf(stream, "%s%s", str, cr == 1 ? "\n" : "");
 }
+
+
+/* Print comprehensive information to stdout in JSON format */
+#define TO_HEX(a) (char)(((a) & 0x0f) <= 0x09 ? (a) + 0x30 : (a) + 0x57)
+
+static void json_escape(char *string, char *escaped)
+{
+  int length = 0;
+  while (*string != '\0' && length < (PATH_MAX * 2 - 1)) {
+    switch (*string) {
+      case '\"':
+      case '\\':
+        *escaped++ = '\\';
+        *escaped++ = *string++;
+        length += 2;
+        break;
+      default:
+	if (!(*string & 0xe0)) {
+	  strcpy(escaped, "\\u00");
+	  escaped += 4;
+	  *escaped++ = TO_HEX((*string >> 4));
+	  *escaped++ = TO_HEX(*string++);
+	  length += 6;
+	} else {
+          *escaped++ = *string++;
+          length++;
+	}
+        break;
+    }
+  }
+  *escaped = '\0';
+  return;
+}
+
+extern void printjson(file_t * restrict files, const int argc, char **argv)
+{
+  file_t * restrict tmpfile;
+  int arg = 0, comma = 0;
+  char *temp = malloc(PATH_MAX * 2);
+  char *temp2 = malloc(PATH_MAX * 2);
+  char *temp_insert = temp;
+
+  /* Output information about the jdupes command environment */
+  printf("{\n  \"jdupesVersion\": \"%s\",\n  \"jdupesVersionDate\": \"%s\",\n", VER, VERDATE);
+
+  printf("  \"commandLine\": \"");
+  while (arg < argc) {
+    sprintf(temp_insert, " %s", argv[arg]);
+    temp_insert += strlen(temp_insert);
+    arg++;
+  }
+  json_escape(temp, temp2);
+  printf("%s\",\n", temp2);
+  printf("  \"extensionFlags\": \"standalone\",\n");
+
+  printf("  \"matchSets\": [\n");
+  while (files != NULL) {
+    if (ISFLAG(files->flags, F_HAS_DUPES)) {
+      if (comma) printf(",\n");
+      printf("    {\n      \"fileSize\": %" PRIdMAX ",\n      \"fileList\": [\n        { \"filePath\": \"", (intmax_t)files->size);
+      sprintf(temp, "%s", files->d_name);
+      json_escape(temp, temp2);
+      fwprint(stdout, temp2, 0);
+      printf("\"");
+      tmpfile = files->duplicates;
+      while (tmpfile != NULL) {
+        printf(" },\n        { \"filePath\": \"");
+        sprintf(temp, "%s", tmpfile->d_name);
+        json_escape(temp, temp2);
+        fwprint(stdout, temp2, 0);
+        printf("\"");
+        tmpfile = tmpfile->duplicates;
+      }
+      printf(" }\n      ]\n    }");
+      comma = 1;
+    }
+    files = files->next;
+  }
+
+  printf("\n  ]\n}\n");
+
+  free(temp); free(temp2);
+  return;
+}
+
 
 static void printmatches(file_t * restrict files)
 {
@@ -1344,7 +1473,7 @@ static void grokdir(const char * const restrict dir,
   size_t dirlen;
   struct travdone *traverse;
   int i, single = 0;
-  jdupes_ino_t inode, n_inode;
+  jdupes_ino_t inode;
   dev_t device, n_device;
   jdupes_mode_t mode;
   DIR *cd;
@@ -1447,7 +1576,7 @@ static void grokdir(const char * const restrict dir,
       if (recurse) {
         /* --one-file-system */
         if (ISFLAG(flags, F_ONEFS)
-            && (getdirstats(newfile->d_name, &n_inode, &n_device, &mode) == 0)
+            && (getdirstats(newfile->d_name, &inode, &n_device, &mode) == 0)
             && (device != n_device)) {
           free(newfile->d_name);
           free(newfile);
@@ -1643,6 +1772,7 @@ static void registerfile(filetree_t * restrict * const restrict nodeptr,
 static file_t **checkmatch(filetree_t * restrict tree, file_t * const restrict file)
 {
   int cmpresult = 0;
+  int cantmatch = 0;
   const jdupes_hash_t * restrict filehash;
 
   if (tree == NULL || file == NULL || tree->file == NULL || tree->file->d_name == NULL || file->d_name == NULL) nullptr("checkmatch()");
@@ -1661,6 +1791,12 @@ static file_t **checkmatch(filetree_t * restrict tree, file_t * const restrict f
   switch (cmpresult) {
     case 2: return &tree->file;  /* linked files + -H switch */
     case -2: return NULL;  /* linked files, no -H switch */
+    case -3:    /* user order */
+    case -4:    /* one filesystem */
+    case -5:    /* permissions */
+        cantmatch = 1;
+        cmpresult = 0;
+        break;
     default: break;
   }
 
@@ -1723,6 +1859,10 @@ static file_t **checkmatch(filetree_t * restrict tree, file_t * const restrict f
       /* Full file hash comparison */
       cmpresult = HASH_COMPARE(file->filehash, tree->file->filehash);
     }
+  }
+
+  if( (cantmatch!=0) && (cmpresult==0) ) {
+    cmpresult = -1;
   }
 
   if (cmpresult < 0) {
@@ -1887,8 +2027,8 @@ static inline void help_text(void)
   printf(" -0 --printnull   \toutput nulls instead of CR/LF (like 'find -print0')\n");
   printf(" -1 --one-file-system \tdo not match files on different filesystems/devices\n");
   printf(" -A --nohidden    \texclude hidden files from consideration\n");
-#ifdef ENABLE_BTRFS
-  printf(" -B --dedupe      \tsend matches to btrfs for block-level deduplication\n");
+#ifdef ENABLE_DEDUPE
+  printf(" -B --dedupe      \tsend matches to filesystem for block-level deduplication\n");
 #endif
   printf(" -d --delete      \tprompt user for files to preserve and delete all\n");
   printf("                  \tothers; important: under particular circumstances,\n");
@@ -1906,6 +2046,7 @@ static inline void help_text(void)
 #ifndef NO_USER_ORDER
   printf(" -I --isolate     \tfiles in the same specified directory won't match\n");
 #endif
+  printf(" -j --json        \tproduce JSON (machine-readable) output\n");
 #ifndef NO_SYMLINKS
   printf(" -l --linksoft    \tmake relative symlinks for duplicates w/o prompting\n");
 #endif
@@ -1938,6 +2079,7 @@ static inline void help_text(void)
   printf(" -s --symlinks    \tfollow symlinks\n");
 #endif
   printf(" -S --size        \tshow size of duplicate files\n");
+  printf(" -t --nochangecheck  \tdisable security check for file changes (aka TOCTTOU)\n");
   printf(" -T --partial-only \tmatch based on partial hashes only. WARNING:\n");
   printf("                  \tEXTREMELY DANGEROUS paired with destructive actions!\n");
   printf("                  \t-T must be specified twice to work. Read the manual!\n");
@@ -1949,9 +2091,7 @@ static inline void help_text(void)
   printf("                  \tExclusions are cumulative: -X dir:abc -X dir:efg\n");
   printf(" -z --zeromatch   \tconsider zero-length files to be duplicates\n");
   printf(" -Z --softabort   \tIf the user aborts (i.e. CTRL-C) act on matches so far\n");
-#ifndef ON_WINDOWS
   printf("                  \tYou can send SIGUSR1 to the program to toggle this\n");
-#endif
   printf("\nFor sizes, K/M/G/T/P/E[B|iB] suffixes can be used (case-insensitive)\n");
 }
 
@@ -1983,6 +2123,7 @@ int main(int argc, char **argv)
     { "hardlinks", 0, 0, 'H' },
     { "reverse", 0, 0, 'i' },
     { "isolate", 0, 0, 'I' },
+    { "json", 0, 0, 'j' },
     { "linksoft", 0, 0, 'l' },
     { "linkhard", 0, 0, 'L' },
     { "summarize", 0, 0, 'm'},
@@ -2001,6 +2142,7 @@ int main(int argc, char **argv)
     { "recursive:", 0, 0, 'R' },
     { "symlinks", 0, 0, 's' },
     { "size", 0, 0, 'S' },
+    { "nochangecheck", 0, 0, 't' },
     { "partial-only", 0, 0, 'T' },
     { "version", 0, 0, 'v' },
     { "xsize", 1, 0, 'x' },
@@ -2018,7 +2160,7 @@ int main(int argc, char **argv)
   oldargv = cloneargs(argc, argv);
 
   while ((opt = getopt_long(argc, argv,
-  "@01ABC:dDfhHiIlLmMnNOpP:qQrRsSTvVzZo:x:X:",
+  "@01ABC:dDfhHiIjlLmMnNOpP:qQrRsStTvVzZo:x:X:",
   long_options, NULL)) != EOF) {
     switch (opt) {
     /* Unsupported but benign options can just be skipped */
@@ -2068,6 +2210,9 @@ int main(int argc, char **argv)
       fprintf(stderr, "warning: -I and -O are disabled and ignored in this build\n");
       break;
 #endif
+    case 'j':
+      SETFLAG(flags, F_PRINTJSON);
+      break;
     case 'm':
       SETFLAG(flags, F_SUMMARIZEMATCHES);
       break;
@@ -2090,7 +2235,7 @@ int main(int argc, char **argv)
       else if (strcmp(optarg, "fullhash") == 0) SETFLAG(p_flags, P_FULLHASH);
       else {
         fprintf(stderr, "Option '%s' is not valid for -P\n", optarg);
-	exit(EXIT_FAILURE);
+        exit(EXIT_FAILURE);
       }
       break;
     case 'q':
@@ -2104,6 +2249,9 @@ int main(int argc, char **argv)
       break;
     case 'R':
       SETFLAG(flags, F_RECURSEAFTER);
+      break;
+    case 't':
+      SETFLAG(flags, F_NOCHANGECHECK);
       break;
     case 'T':
       if (partialonly_spec == 0)
@@ -2150,8 +2298,8 @@ int main(int argc, char **argv)
       break;
     case 'v':
     case 'V':
-      printf("jdupes small stand-alone version (derived from v1.11.1)");
-      printf("\nCopyright (C) 2015-2019 by Jody Bruchon <jody@jodybruchon.com>\n");
+      printf("jdupes small stand-alone version (derived from v%s, %s)", VER, VERDATE);
+      printf("\nCopyright (C) 2015-2020 by Jody Bruchon <jody@jodybruchon.com>\n");
       exit(EXIT_SUCCESS);
     case 'o':
       if (!strncasecmp("name", optarg, 5)) {
@@ -2164,7 +2312,7 @@ int main(int argc, char **argv)
       }
       break;
     case 'B':
-#ifdef ENABLE_BTRFS
+#ifdef ENABLE_DEDUPE
       SETFLAG(flags, F_DEDUPEFILES);
       /* btrfs will do the byte-for-byte check itself */
       SETFLAG(flags, F_QUICKCOMPARE);
@@ -2208,7 +2356,7 @@ int main(int argc, char **argv)
     exit(EXIT_FAILURE);
   }
 
-#ifdef ENABLE_BTRFS
+#ifdef ENABLE_DEDUPE
   if (ISFLAG(flags, F_CONSIDERHARDLINKS) && ISFLAG(flags, F_DEDUPEFILES))
     fprintf(stderr, "warning: option --dedupe overrides the behavior of --hardlinks\n");
 #endif
@@ -2218,6 +2366,7 @@ int main(int argc, char **argv)
       !!ISFLAG(flags, F_DELETEFILES) +
       !!ISFLAG(flags, F_HARDLINKFILES) +
       !!ISFLAG(flags, F_MAKESYMLINKS) +
+      !!ISFLAG(flags, F_PRINTJSON) +
       !!ISFLAG(flags, F_DEDUPEFILES);
 
   if (pm > 1) {
@@ -2257,6 +2406,9 @@ int main(int argc, char **argv)
     }
   }
 
+  /* We don't need the double traversal check tree anymore */
+  travdone_free(travdone_head);
+
   if (ISFLAG(flags, F_REVERSESORT)) sort_direction = -1;
   if (!ISFLAG(flags, F_HIDEPROGRESS)) fprintf(stderr, "\n");
   if (!files) {
@@ -2269,10 +2421,8 @@ int main(int argc, char **argv)
 
   /* Catch CTRL-C */
   signal(SIGINT, sighandler);
-#ifndef ON_WINDOWS
   /* Catch SIGUSR1 and use it to enable -Z */
   signal(SIGUSR1, sigusr1);
-#endif
 
   while (curfile) {
     static file_t **match = NULL;
@@ -2350,10 +2500,11 @@ skip_file_scan:
 #ifndef NO_HARDLINKS
   if (ISFLAG(flags, F_HARDLINKFILES)) linkfiles(files, 1);
 #endif /* NO_HARDLINKS */
-#ifdef ENABLE_BTRFS
+#ifdef ENABLE_DEDUPE
   if (ISFLAG(flags, F_DEDUPEFILES)) dedupefiles(files);
-#endif /* ENABLE_BTRFS */
+#endif /* ENABLE_DEDUPE */
   if (ISFLAG(flags, F_PRINTMATCHES)) printmatches(files);
+  if (ISFLAG(flags, F_PRINTJSON)) printjson(files, argc, argv);
   if (ISFLAG(flags, F_SUMMARIZEMATCHES)) {
     if (ISFLAG(flags, F_PRINTMATCHES)) printf("\n\n");
     summarizematches(files);

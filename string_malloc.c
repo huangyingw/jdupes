@@ -2,7 +2,7 @@
  * String table allocator
  * A replacement for malloc() for tables of fixed strings
  *
- * Copyright (C) 2015-2018 by Jody Bruchon <jody@jodybruchon.com>
+ * Copyright (C) 2015-2020 by Jody Bruchon <jody@jodybruchon.com>
  * Released under The MIT License
  */
 
@@ -210,12 +210,12 @@ void *string_malloc(size_t len)
 
 
 /* Free an object, adding to free list if possible */
-void string_free(void * const restrict addr)
+void string_free(void * const addr)
 {
 	int freefull = 0;
 	struct freelist *emptyslot = NULL;
 	static uintptr_t before, after;
-	static size_t * restrict sizeptr;
+	static size_t *sizeptr;
 	static size_t size;
 
 	/* Do nothing on NULL address */
