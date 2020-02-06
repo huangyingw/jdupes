@@ -202,12 +202,6 @@ typedef struct _file {
 #endif
 } file_t;
 
-typedef struct _filetree {
-  file_t *file;
-  struct _filetree *left;
-  struct _filetree *right;
-} filetree_t;
-
 /* This gets used in many functions */
 #ifdef ON_WINDOWS
  extern struct winstat s;

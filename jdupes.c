@@ -224,7 +224,6 @@ static uintmax_t progress = 0, item_progress = 0, dupecount = 0;
 static unsigned int small_file = 0, partial_hash = 0, partial_elim = 0;
 static unsigned int full_hash = 0, partial_to_full = 0, hash_fail = 0;
 static uintmax_t comparisons = 0;
-static unsigned int left_branch = 0, right_branch = 0;
  #ifdef ON_WINDOWS
   #ifndef NO_HARDLINKS
 static unsigned int hll_exclude = 0;
@@ -238,13 +237,11 @@ static unsigned int max_depth = 0;
 #endif
 
 /* File tree head */
-static filetree_t *checktree = NULL;
+static file_t *filehead = NULL;
+static file_t *filetail = NULL;
 
 /* Directory/file parameter position counter */
 static unsigned int user_item_count = 1;
-
-/* registerfile() direction options */
-enum tree_direction { NONE, LEFT, RIGHT };
 
 /* Sort order reversal */
 static int sort_direction = 1;
@@ -690,25 +687,26 @@ static int check_singlefile(file_t * const restrict newfile)
 }
 
 
-static file_t *init_newfile(const size_t len, file_t * restrict * const restrict filelistp)
+static file_t *init_newfile(const size_t len)
 {
   file_t * const restrict newfile = (file_t *)string_malloc(sizeof(file_t));
 
   if (!newfile) oom("init_newfile() file structure");
-  if (!filelistp) nullptr("init_newfile() filelistp");
+  if (!prevfile) nullptr("init_newfile() prevfile");
 
-  LOUD(fprintf(stderr, "init_newfile(len %lu, filelistp %p)\n", len, filelistp));
+  LOUD(fprintf(stderr, "init_newfile(len %lu)\n", len));
 
   memset(newfile, 0, sizeof(file_t));
   newfile->d_name = (char *)string_malloc(len);
   if (!newfile->d_name) oom("init_newfile() filename");
 
-  newfile->next = *filelistp;
+  if (filehead == NULL) filehead = newfile;
+  else filetail->next = newfile;
+  filetail = newfile;
 #ifndef NO_USER_ORDER
   newfile->user_order = user_item_count;
 #endif
   newfile->size = -1;
-  newfile->duplicates = NULL;
   return newfile;
 }
 
@@ -746,15 +744,15 @@ static void travdone_free(struct travdone * const restrict cur)
 
 
 /* Add a single file to the file tree */
-static inline file_t *grokfile(const char * const restrict name, file_t * restrict * const restrict filelistp)
+static inline file_t *grokfile(const char * const restrict name)
 {
   file_t * restrict newfile;
 
-  if (!name || !filelistp) nullptr("grokfile()");
-  LOUD(fprintf(stderr, "grokfile: '%s' %p\n", name, filelistp));
+  if (!name) nullptr("grokfile()");
+  LOUD(fprintf(stderr, "grokfile: '%s'\n", name));
 
   /* Allocate the file_t and the d_name entries */
-  newfile = init_newfile(strlen(name) + 2, filelistp);
+  newfile = init_newfile(strlen(name) + 2);
 
   strcpy(newfile->d_name, name);
 
@@ -769,9 +767,8 @@ static inline file_t *grokfile(const char * const restrict name, file_t * restri
 }
 
 
-/* Load a directory's contents into the file tree, recursing as needed */
+/* Load a directory's contents into the file list, recursing as needed */
 static void grokdir(const char * const restrict dir,
-                file_t * restrict * const restrict filelistp,
                 int recurse)
 {
   file_t * restrict newfile;
@@ -791,7 +788,7 @@ static void grokdir(const char * const restrict dir,
   DIR *cd;
 #endif
 
-  if (dir == NULL || filelistp == NULL) nullptr("grokdir()");
+  if (dir == NULL) nullptr("grokdir()");
   LOUD(fprintf(stderr, "grokdir: scanning '%s' (order %d, recurse %d)\n", dir, user_item_count, recurse));
 
   /* Double traversal prevention tree */
@@ -838,7 +835,7 @@ static void grokdir(const char * const restrict dir,
 
   /* if dir is actually a file, just add it to the file tree */
   if (i == 1) {
-    newfile = grokfile(dir, filelistp);
+    newfile = grokfile(dir);
     if (newfile == NULL) {
       LOUD(fprintf(stderr, "grokfile rejected '%s'\n", dir));
       return;
@@ -904,7 +901,7 @@ static void grokdir(const char * const restrict dir,
     d_name_len++;
 
     /* Allocate the file_t and the d_name entries */
-    newfile = init_newfile(dirlen + d_name_len + 2, filelistp);
+    newfile = init_newfile(dirlen + d_name_len + 2);
 
     tp = tempname;
     memcpy(newfile->d_name, tp, dirlen + d_name_len);
@@ -934,12 +931,12 @@ static void grokdir(const char * const restrict dir,
 #ifndef NO_SYMLINKS
         else if (ISFLAG(flags, F_FOLLOWLINKS) || !ISFLAG(newfile->flags, F_IS_SYMLINK)) {
           LOUD(fprintf(stderr, "grokdir: directory(symlink): recursing (-r/-R)\n"));
-          grokdir(newfile->d_name, filelistp, recurse);
+          grokdir(newfile->d_name, recurse);
         }
 #else
         else {
           LOUD(fprintf(stderr, "grokdir: directory: recursing (-r/-R)\n"));
-          grokdir(newfile->d_name, filelistp, recurse);
+          grokdir(newfile->d_name, recurse);
         }
 #endif
       } else { LOUD(fprintf(stderr, "grokdir: directory: not recursing\n")); }
@@ -954,7 +951,6 @@ add_single_file:
 #else
       if (S_ISREG(newfile->mode)) {
 #endif
-        *filelistp = newfile;
         filecount++;
         progress++;
 
@@ -1113,20 +1109,14 @@ static jdupes_hash_t *get_filehash(const file_t * const restrict checkfile,
 }
 
 
-static inline void registerfile(filetree_t * restrict * const restrict nodeptr,
-                const enum tree_direction d, file_t * const restrict file)
+static inline void registerfile(file_t * const restrict file)
 {
-  filetree_t * restrict branch;
-
-  if (nodeptr == NULL || file == NULL || (d != NONE && *nodeptr == NULL)) nullptr("registerfile()");
-  LOUD(fprintf(stderr, "registerfile(direction %d)\n", d));
+  if (file == NULL) nullptr("registerfile()");
+  LOUD(fprintf(stderr, "registerfile('%s')\n", file));
 
   /* Allocate and initialize a new node for the file */
-  branch = (filetree_t *)string_malloc(sizeof(filetree_t));
-  if (branch == NULL) oom("registerfile() branch");
-  branch->file = file;
-  branch->left = NULL;
-  branch->right = NULL;
+  filetail->next = (file_t *)string_malloc(sizeof(file_t));
+  if (filetail->next == NULL) oom("registerfile() branch");
 
   /* Attach the new node to the requested branch */
   switch (d) {
@@ -1152,22 +1142,15 @@ static inline void registerfile(filetree_t * restrict * const restrict nodeptr,
 }
 
 
-#ifdef TREE_DEPTH_STATS
-#define TREE_DEPTH_UPDATE_MAX() { if (max_depth < tree_depth) max_depth = tree_depth; tree_depth = 0; }
-#else
-#define TREE_DEPTH_UPDATE_MAX()
-#endif
-
-
 /* Check two files for a match */
-static file_t **checkmatch(filetree_t * restrict tree, file_t * const restrict file)
+static file_t **checkmatch(file_t * const restrict file1, file_t * const restrict file2)
 {
   int cmpresult = 0;
   int cantmatch = 0;
   const jdupes_hash_t * restrict filehash;
 
-  if (tree == NULL || file == NULL || tree->file == NULL || tree->file->d_name == NULL || file->d_name == NULL) nullptr("checkmatch()");
-  LOUD(fprintf(stderr, "checkmatch ('%s', '%s')\n", tree->file->d_name, file->d_name));
+  if (file1 == NULL || file2 == NULL || file1->d_name == NULL || file2->d_name == NULL) nullptr("checkmatch()");
+  LOUD(fprintf(stderr, "checkmatch ('%s', '%s')\n", file1->d_name, file2->d_name));
 
   /* If device and inode fields are equal one of the files is a
    * hard link to the other or the files have been listed twice
@@ -1182,9 +1165,9 @@ static file_t **checkmatch(filetree_t * restrict tree, file_t * const restrict f
  * they point to the exact same inode. If we aren't considering
  * hard links as duplicates, we just return NULL. */
 
-  cmpresult = check_conditions(tree->file, file);
+  cmpresult = check_conditions(file1, file2);
   switch (cmpresult) {
-    case 2: return &tree->file;  /* linked files + -H switch */
+    case 2: return &file1;  /* linked files + -H switch */
     case -2: return NULL;  /* linked files, no -H switch */
     case -3:    /* user order */
     case -4:    /* one filesystem */
@@ -1196,49 +1179,49 @@ static file_t **checkmatch(filetree_t * restrict tree, file_t * const restrict f
   }
 
   /* Print pre-check (early) match candidates if requested */
-  if (ISFLAG(p_flags, P_EARLYMATCH)) printf("Early match check passed:\n   %s\n   %s\n\n", file->d_name, tree->file->d_name);
+  if (ISFLAG(p_flags, P_EARLYMATCH)) printf("Early match check passed:\n   %s\n   %s\n\n", file1->d_name, file2->d_name);
 
   /* If preliminary matching succeeded, do main file data checks */
   if (cmpresult == 0) {
     LOUD(fprintf(stderr, "checkmatch: starting file data comparisons\n"));
     /* Attempt to exclude files quickly with partial file hashing */
-    if (!ISFLAG(tree->file->flags, F_HASH_PARTIAL)) {
-      filehash = get_filehash(tree->file, PARTIAL_HASH_SIZE);
+    if (!ISFLAG(file1->flags, F_HASH_PARTIAL)) {
+      filehash = get_filehash(file1, PARTIAL_HASH_SIZE);
       if (filehash == NULL) return NULL;
 
-      tree->file->filehash_partial = *filehash;
-      SETFLAG(tree->file->flags, F_HASH_PARTIAL);
+      file1->filehash_partial = *filehash;
+      SETFLAG(file1->flags, F_HASH_PARTIAL);
     }
 
-    if (!ISFLAG(file->flags, F_HASH_PARTIAL)) {
-      filehash = get_filehash(file, PARTIAL_HASH_SIZE);
+    if (!ISFLAG(file2->flags, F_HASH_PARTIAL)) {
+      filehash = get_filehash(file2, PARTIAL_HASH_SIZE);
       if (filehash == NULL) return NULL;
 
-      file->filehash_partial = *filehash;
-      SETFLAG(file->flags, F_HASH_PARTIAL);
+      file2->filehash_partial = *filehash;
+      SETFLAG(file2->flags, F_HASH_PARTIAL);
     }
 
-    cmpresult = HASH_COMPARE(file->filehash_partial, tree->file->filehash_partial);
+    cmpresult = HASH_COMPARE(file1->filehash_partial, file1->filehash_partial);
     LOUD(if (!cmpresult) fprintf(stderr, "checkmatch: partial hashes match\n"));
     LOUD(if (cmpresult) fprintf(stderr, "checkmatch: partial hashes do not match\n"));
     DBG(partial_hash++;)
 
     /* Print partial hash matching pairs if requested */
     if (cmpresult == 0 && ISFLAG(p_flags, P_PARTIAL))
-      printf("Partial hashes match:\n   %s\n   %s\n\n", file->d_name, tree->file->d_name);
+      printf("Partial hashes match:\n   %s\n   %s\n\n", file1->d_name, file1->d_name);
 
-    if (file->size <= PARTIAL_HASH_SIZE || ISFLAG(flags, F_PARTIALONLY)) {
+    if (file1->size <= PARTIAL_HASH_SIZE || ISFLAG(flags, F_PARTIALONLY)) {
       if (ISFLAG(flags, F_PARTIALONLY)) LOUD(fprintf(stderr, "checkmatch: partial only mode: treating partial hash as full hash\n"));
       else { LOUD(fprintf(stderr, "checkmatch: small file: copying partial hash to full hash\n")); }
       /* filehash_partial = filehash if file is small enough */
-      if (!ISFLAG(file->flags, F_HASH_FULL)) {
-        file->filehash = file->filehash_partial;
-        SETFLAG(file->flags, F_HASH_FULL);
+      if (!ISFLAG(file1->flags, F_HASH_FULL)) {
+        file1->filehash = file1->filehash_partial;
+        SETFLAG(file1->flags, F_HASH_FULL);
         DBG(small_file++;)
       }
-      if (!ISFLAG(tree->file->flags, F_HASH_FULL)) {
-        tree->file->filehash = tree->file->filehash_partial;
-        SETFLAG(tree->file->flags, F_HASH_FULL);
+      if (!ISFLAG(file1->flags, F_HASH_FULL)) {
+        file1->filehash = file1->filehash_partial;
+        SETFLAG(file1->flags, F_HASH_FULL);
         DBG(small_file++;)
       }
     } else if (cmpresult == 0) {
@@ -1247,24 +1230,24 @@ static file_t **checkmatch(filetree_t * restrict tree, file_t * const restrict f
         LOUD(fprintf(stderr, "checkmatch: skipping full file hashes (F_SKIPMATCH)\n"));
       } else {
         /* If partial match was correct, perform a full file hash match */
-        if (!ISFLAG(tree->file->flags, F_HASH_FULL)) {
-          filehash = get_filehash(tree->file, 0);
+        if (!ISFLAG(file1->flags, F_HASH_FULL)) {
+          filehash = get_filehash(file1, 0);
           if (filehash == NULL) return NULL;
 
-          tree->file->filehash = *filehash;
-          SETFLAG(tree->file->flags, F_HASH_FULL);
+          file1->filehash = *filehash;
+          SETFLAG(file1->flags, F_HASH_FULL);
         }
 
-        if (!ISFLAG(file->flags, F_HASH_FULL)) {
-          filehash = get_filehash(file, 0);
+        if (!ISFLAG(file1->flags, F_HASH_FULL)) {
+          filehash = get_filehash(file2, 0);
           if (filehash == NULL) return NULL;
 
-          file->filehash = *filehash;
-          SETFLAG(file->flags, F_HASH_FULL);
+          file1->filehash = *filehash;
+          SETFLAG(file1->flags, F_HASH_FULL);
         }
 
         /* Full file hash comparison */
-        cmpresult = HASH_COMPARE(file->filehash, tree->file->filehash);
+        cmpresult = HASH_COMPARE(file1->filehash, file1->filehash);
         LOUD(if (!cmpresult) fprintf(stderr, "checkmatch: full hashes match\n"));
         LOUD(if (cmpresult) fprintf(stderr, "checkmatch: full hashes do not match\n"));
         DBG(full_hash++);
@@ -1279,14 +1262,14 @@ static file_t **checkmatch(filetree_t * restrict tree, file_t * const restrict f
     cmpresult = -1;
   }
 
-  if (cmpresult < 0) {
-    if (tree->left != NULL) {
+  if (cmpresult != 0) {
+    if (file->next != NULL) {
       LOUD(fprintf(stderr, "checkmatch: recursing tree: left\n"));
       DBG(left_branch++; tree_depth++;)
-      return checkmatch(tree->left, file);
+      return checkmatch(tree->left, file2);
     } else {
       LOUD(fprintf(stderr, "checkmatch: registering file: left\n"));
-      registerfile(&tree, LEFT, file);
+      registerfile(file2);
       TREE_DEPTH_UPDATE_MAX();
       return NULL;
     }
@@ -1294,10 +1277,10 @@ static file_t **checkmatch(filetree_t * restrict tree, file_t * const restrict f
     if (tree->right != NULL) {
       LOUD(fprintf(stderr, "checkmatch: recursing tree: right\n"));
       DBG(right_branch++; tree_depth++;)
-      return checkmatch(tree->right, file);
+      return checkmatch(tree->right, file2);
     } else {
       LOUD(fprintf(stderr, "checkmatch: registering file: right\n"));
-      registerfile(&tree, RIGHT, file);
+      registerfile(file2);
       TREE_DEPTH_UPDATE_MAX();
       return NULL;
     }
@@ -1306,8 +1289,8 @@ static file_t **checkmatch(filetree_t * restrict tree, file_t * const restrict f
     DBG(partial_to_full++;)
     TREE_DEPTH_UPDATE_MAX();
     LOUD(fprintf(stderr, "checkmatch: files appear to match based on hashes\n"));
-    if (ISFLAG(p_flags, P_FULLHASH)) printf("Full hashes match:\n   %s\n   %s\n\n", file->d_name, tree->file->d_name);
-    return &tree->file;
+    if (ISFLAG(p_flags, P_FULLHASH)) printf("Full hashes match:\n   %s\n   %s\n\n", file1->d_name, file2->d_name);
+    return &file1;
   }
   /* Fall through - should never be reached */
   return NULL;
@@ -1573,7 +1556,6 @@ int wmain(int argc, wchar_t **wargv)
 int main(int argc, char **argv)
 #endif
 {
-  static file_t *files = NULL;
   static file_t *curfile;
   static char **oldargv;
   static char *xs;
@@ -1914,7 +1896,7 @@ int main(int argc, char **argv)
       break;
 
     default:
-      if (opt != '?') fprintf(stderr, "Sorry, using '-%c' is not supported in this build.\n", opt);
+      if (opt != '?') fprintf(stderr, "Option '-%c' is not supported in this build.\n", opt);
       fprintf(stderr, "Try `jdupes --help' for more information.\n");
       string_malloc_destroy();
       exit(EXIT_FAILURE);
@@ -1986,7 +1968,7 @@ int main(int argc, char **argv)
     /* F_RECURSE is not set for directories before --recurse: */
     for (int x = optind; x < firstrecurse; x++) {
       slash_convert(argv[x]);
-      grokdir(argv[x], &files, 0);
+      grokdir(argv[x], 0);
       user_item_count++;
     }
 
@@ -1995,13 +1977,13 @@ int main(int argc, char **argv)
 
     for (int x = firstrecurse; x < argc; x++) {
       slash_convert(argv[x]);
-      grokdir(argv[x], &files, 1);
+      grokdir(argv[x], 1);
       user_item_count++;
     }
   } else {
     for (int x = optind; x < argc; x++) {
       slash_convert(argv[x]);
-      grokdir(argv[x], &files, ISFLAG(flags, F_RECURSE));
+      grokdir(argv[x], ISFLAG(flags, F_RECURSE));
       user_item_count++;
     }
   }
@@ -2041,7 +2023,7 @@ int main(int argc, char **argv)
 
     LOUD(fprintf(stderr, "\nMAIN: current file: %s\n", curfile->d_name));
 
-    if (!checktree) registerfile(&checktree, NONE, curfile);
+    if (!filehead) init_newfile() ; //XXX
     else match = checkmatch(checktree, curfile);
 
     /* Byte-for-byte check that a matched pair are actually matched */
@@ -2136,9 +2118,8 @@ skip_file_scan:
     fprintf(stderr, "\n%d partial (+%d small) -> %d full hash -> %d full (%d partial elim) (%d hash%u fail)\n",
         partial_hash, small_file, full_hash, partial_to_full,
         partial_elim, hash_fail, (unsigned int)sizeof(jdupes_hash_t)*8);
-    fprintf(stderr, "%" PRIuMAX " total files, %" PRIuMAX " comparisons, branch L %u, R %u, both %u, max tree depth %u\n",
-        filecount, comparisons, left_branch, right_branch,
-        left_branch + right_branch, max_depth);
+    fprintf(stderr, "%" PRIuMAX " total files, %" PRIuMAX " comparisons\n",
+        filecount, comparisons);
     fprintf(stderr, "SMA: allocs %" PRIuMAX ", free %" PRIuMAX " (merge %" PRIuMAX ", repl %" PRIuMAX "), fail %" PRIuMAX ", reuse %" PRIuMAX ", scan %" PRIuMAX ", tails %" PRIuMAX "\n",
         sma_allocs, sma_free_good, sma_free_merged, sma_free_replaced,
         sma_free_ignored, sma_free_reclaimed,
