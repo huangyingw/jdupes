@@ -297,7 +297,9 @@ extern void nullptr(const char * restrict func)
 }
 
 /* Compare two hashes like memcmp() */
-#define HASH_COMPARE(a,b) ((a > b) ? 1:((a == b) ? 0:-1))
+/* #define HASH_COMPARE(a,b) ((a > b) ? 1:((a == b) ? 0:-1)) */
+/* Compare two hashes for equality only */
+#define HASH_COMPARE(a,b) (a != b)
 
 
 static inline char **cloneargs(const int argc, char **argv)
@@ -701,6 +703,8 @@ static file_t *init_newfile(const size_t len)
   newfile->user_order = user_item_count;
 #endif
   newfile->size = -1;
+  newfile->next = NULL;
+  newfile->duplicates = NULL;
   return newfile;
 }
 
@@ -1148,7 +1152,7 @@ static int checkmatch(file_t * const restrict file1, file_t * const restrict fil
     /* Attempt to exclude files quickly with partial file hashing */
     if (!ISFLAG(file1->flags, F_HASH_PARTIAL)) {
       filehash = get_filehash(file1, PARTIAL_HASH_SIZE);
-      if (filehash == NULL) return 1;
+      if (filehash == NULL) return 0;
 
       file1->filehash_partial = *filehash;
       SETFLAG(file1->flags, F_HASH_PARTIAL);
@@ -1156,7 +1160,7 @@ static int checkmatch(file_t * const restrict file1, file_t * const restrict fil
 
     if (!ISFLAG(file2->flags, F_HASH_PARTIAL)) {
       filehash = get_filehash(file2, PARTIAL_HASH_SIZE);
-      if (filehash == NULL) return 1;
+      if (filehash == NULL) return 0;
 
       file2->filehash_partial = *filehash;
       SETFLAG(file2->flags, F_HASH_PARTIAL);
@@ -1196,7 +1200,7 @@ static int checkmatch(file_t * const restrict file1, file_t * const restrict fil
         /* If partial match was correct, perform a full file hash match */
         if (!ISFLAG(file1->flags, F_HASH_FULL)) {
           filehash = get_filehash(file1, 0);
-          if (filehash == NULL) return 1;
+          if (filehash == NULL) return 0;
 
           file1->filehash = *filehash;
           SETFLAG(file1->flags, F_HASH_FULL);
@@ -1204,7 +1208,7 @@ static int checkmatch(file_t * const restrict file1, file_t * const restrict fil
 
         if (!ISFLAG(file1->flags, F_HASH_FULL)) {
           filehash = get_filehash(file2, 0);
-          if (filehash == NULL) return 1;
+          if (filehash == NULL) return 0;
 
           file1->filehash = *filehash;
           SETFLAG(file1->flags, F_HASH_FULL);
@@ -1384,7 +1388,7 @@ static void registerpair(file_t *curfile, file_t *newmatch,
 
       break;
     } else {
-      if (traverse->duplicates == 0) {
+      if (traverse->duplicates == NULL) {
         traverse->duplicates = newmatch;
         if (!back) SETFLAG(traverse->flags, F_HAS_DUPES);
 
@@ -1395,6 +1399,7 @@ static void registerpair(file_t *curfile, file_t *newmatch,
     back = traverse;
     traverse = traverse->duplicates;
   }
+  LOUD(fprintf(stderr, "registerpair end\n", curfile->d_name, newmatch->d_name);)
   return;
 }
 
@@ -1951,7 +1956,9 @@ int main(int argc, char **argv)
   signal(SIGUSR1, sigusr1);
 #endif
 
-  for (curfile = filehead; curfile != NULL; curfile = curfile->next) {
+  curfile = filehead;
+
+  while (curfile) {
     file_t *scanfile;
     FILE *file1;
     FILE *file2;
@@ -1967,67 +1974,75 @@ int main(int argc, char **argv)
     LOUD(fprintf(stderr, "\nMAIN: current file: %s\n", curfile->d_name));
 
     scanfile = curfile->next;
-    match = checkmatch(curfile, scanfile);
 
-    /* Byte-for-byte check that a matched pair are actually matched */
-    if (match == 0) {
-      /* Quick or partial-only compare will never run confirmmatch()
-       * Also skip match confirmation for hard-linked files
-       * (This set of comparisons is ugly, but quite efficient) */
-      if (ISFLAG(flags, F_QUICKCOMPARE) || ISFLAG(flags, F_PARTIALONLY) ||
-           (ISFLAG(flags, F_CONSIDERHARDLINKS) &&
-           (curfile->inode == scanfile->inode) &&
-           (curfile->device == scanfile->device))
-         ) {
-        LOUD(fprintf(stderr, "MAIN: notice: hard linked, quick, or partial-only match (-H/-Q/-T)\n"));
-        registerpair(curfile, scanfile,
-            (ordertype == ORDER_TIME) ? sort_pairs_by_mtime : sort_pairs_by_filename);
-        dupecount++;
-        goto skip_full_check;
-      }
+    while (scanfile) {
+fprintf(stderr, "cf %p->%p, sf %p->%p\n", curfile, curfile->next, scanfile, scanfile->next);
+      LOUD(fprintf(stderr, "MAIN: scanfile: %s\n", scanfile->d_name));
+      match = checkmatch(curfile, scanfile);
 
-#ifdef UNICODE
-      if (!M2W(curfile->d_name, wstr)) file1 = NULL;
-      else file1 = _wfopen(wstr, FILE_MODE_RO);
-#else
-      file1 = fopen(curfile->d_name, FILE_MODE_RO);
-#endif
-      if (!file1) {
-        LOUD(fprintf(stderr, "MAIN: warning: file1 fopen() failed ('%s')\n", curfile->d_name));
-        curfile = curfile->next;
-        continue;
-      }
+      /* Byte-for-byte check that a matched pair are actually matched */
+      if (match == 1) {
+        /* Quick or partial-only compare will never run confirmmatch()
+         * Also skip match confirmation for hard-linked files
+         * (This set of comparisons is ugly, but quite efficient) */
+        if (ISFLAG(flags, F_QUICKCOMPARE) || ISFLAG(flags, F_PARTIALONLY) ||
+             (ISFLAG(flags, F_CONSIDERHARDLINKS) &&
+             (curfile->inode == scanfile->inode) &&
+             (curfile->device == scanfile->device))
+           ) {
+          LOUD(fprintf(stderr, "MAIN: notice: hard linked, quick, or partial-only match (-H/-Q/-T)\n"));
+          registerpair(curfile, scanfile,
+              (ordertype == ORDER_TIME) ? sort_pairs_by_mtime : sort_pairs_by_filename);
+          dupecount++;
+          scanfile = scanfile->next;
+          continue;
+        }
 
 #ifdef UNICODE
-      if (!M2W(scanfile->d_name, wstr)) file2 = NULL;
-      else file2 = _wfopen(wstr, FILE_MODE_RO);
+        if (!M2W(curfile->d_name, wstr)) file1 = NULL;
+        else file1 = _wfopen(wstr, FILE_MODE_RO);
 #else
-      file2 = fopen(scanfile->d_name, FILE_MODE_RO);
+        file1 = fopen(curfile->d_name, FILE_MODE_RO);
 #endif
-      if (!file2) {
+        if (!file1) {
+          LOUD(fprintf(stderr, "MAIN: warning: file1 fopen() failed ('%s')\n", curfile->d_name));
+          curfile = curfile->next;
+          break;
+        }
+
+#ifdef UNICODE
+        if (!M2W(scanfile->d_name, wstr)) file2 = NULL;
+        else file2 = _wfopen(wstr, FILE_MODE_RO);
+#else
+        file2 = fopen(scanfile->d_name, FILE_MODE_RO);
+#endif
+        if (!file2) {
+          fclose(file1);
+          LOUD(fprintf(stderr, "MAIN: warning: file2 fopen() failed ('%s')\n", scanfile->d_name));
+          scanfile = scanfile->next;
+          continue;
+        }
+
+        if (confirmmatch(file1, file2, curfile->size)) {
+          LOUD(fprintf(stderr, "MAIN: registering matched file pair\n"));
+          registerpair(curfile, scanfile,
+              (ordertype == ORDER_TIME) ? sort_pairs_by_mtime : sort_pairs_by_filename);
+          dupecount++;
+        } DBG(else hash_fail++;)
+
         fclose(file1);
-        LOUD(fprintf(stderr, "MAIN: warning: file2 fopen() failed ('%s')\n", scanfile->d_name));
-        curfile = curfile->next;
-        continue;
+        fclose(file2);
       }
 
-      if (confirmmatch(file1, file2, curfile->size)) {
-        LOUD(fprintf(stderr, "MAIN: registering matched file pair\n"));
-        registerpair(curfile, scanfile,
-            (ordertype == ORDER_TIME) ? sort_pairs_by_mtime : sort_pairs_by_filename);
-        dupecount++;
-      } DBG(else hash_fail++;)
+      scanfile = scanfile->next;
+    }   /* scanfile */
 
-      fclose(file1);
-      fclose(file2);
-    }
-
-skip_full_check:
-    curfile = curfile->next;
 
     if (!ISFLAG(flags, F_HIDEPROGRESS)) update_progress(NULL, -1);
     progress++;
-  }
+    curfile = curfile->next;
+    LOUD(fprintf(stderr, "MAIN: curfile->next\n"));
+  }   /* curfile */
 
   if (!ISFLAG(flags, F_HIDEPROGRESS)) fprintf(stderr, "\r%60s\r", " ");
 
