@@ -231,11 +231,6 @@ static unsigned int hll_exclude = 0;
  #endif
 #endif /* DEBUG */
 
-#ifdef TREE_DEPTH_STATS
-static unsigned int tree_depth = 0;
-static unsigned int max_depth = 0;
-#endif
-
 /* File tree head */
 static file_t *filehead = NULL;
 static file_t *filetail = NULL;
@@ -692,7 +687,6 @@ static file_t *init_newfile(const size_t len)
   file_t * const restrict newfile = (file_t *)string_malloc(sizeof(file_t));
 
   if (!newfile) oom("init_newfile() file structure");
-  if (!prevfile) nullptr("init_newfile() prevfile");
 
   LOUD(fprintf(stderr, "init_newfile(len %lu)\n", len));
 
@@ -1109,41 +1103,8 @@ static jdupes_hash_t *get_filehash(const file_t * const restrict checkfile,
 }
 
 
-static inline void registerfile(file_t * const restrict file)
-{
-  if (file == NULL) nullptr("registerfile()");
-  LOUD(fprintf(stderr, "registerfile('%s')\n", file));
-
-  /* Allocate and initialize a new node for the file */
-  filetail->next = (file_t *)string_malloc(sizeof(file_t));
-  if (filetail->next == NULL) oom("registerfile() branch");
-
-  /* Attach the new node to the requested branch */
-  switch (d) {
-    case LEFT:
-      (*nodeptr)->left = branch;
-      break;
-    case RIGHT:
-      (*nodeptr)->right = branch;
-      break;
-    case NONE:
-      /* For the root of the tree only */
-      *nodeptr = branch;
-      break;
-    default:
-      /* This should never ever happen */
-      fprintf(stderr, "\ninternal error: invalid direction for registerfile(), report this\n");
-      string_malloc_destroy();
-      exit(EXIT_FAILURE);
-      break;
-  }
-
-  return;
-}
-
-
 /* Check two files for a match */
-static file_t **checkmatch(file_t * const restrict file1, file_t * const restrict file2)
+static int checkmatch(file_t * const restrict file1, file_t * const restrict file2)
 {
   int cmpresult = 0;
   int cantmatch = 0;
@@ -1163,12 +1124,12 @@ static file_t **checkmatch(file_t * const restrict file1, file_t * const restric
 /* If considering hard linked files as duplicates, they are
  * automatically duplicates without being read further since
  * they point to the exact same inode. If we aren't considering
- * hard links as duplicates, we just return NULL. */
+ * hard links as duplicates, we just return 0 */
 
   cmpresult = check_conditions(file1, file2);
   switch (cmpresult) {
-    case 2: return &file1;  /* linked files + -H switch */
-    case -2: return NULL;  /* linked files, no -H switch */
+    case 2: return 1;  /* linked files + -H switch */
+    case -2: return 0;  /* linked files, no -H switch */
     case -3:    /* user order */
     case -4:    /* one filesystem */
     case -5:    /* permissions */
@@ -1187,7 +1148,7 @@ static file_t **checkmatch(file_t * const restrict file1, file_t * const restric
     /* Attempt to exclude files quickly with partial file hashing */
     if (!ISFLAG(file1->flags, F_HASH_PARTIAL)) {
       filehash = get_filehash(file1, PARTIAL_HASH_SIZE);
-      if (filehash == NULL) return NULL;
+      if (filehash == NULL) return 1;
 
       file1->filehash_partial = *filehash;
       SETFLAG(file1->flags, F_HASH_PARTIAL);
@@ -1195,7 +1156,7 @@ static file_t **checkmatch(file_t * const restrict file1, file_t * const restric
 
     if (!ISFLAG(file2->flags, F_HASH_PARTIAL)) {
       filehash = get_filehash(file2, PARTIAL_HASH_SIZE);
-      if (filehash == NULL) return NULL;
+      if (filehash == NULL) return 1;
 
       file2->filehash_partial = *filehash;
       SETFLAG(file2->flags, F_HASH_PARTIAL);
@@ -1211,8 +1172,11 @@ static file_t **checkmatch(file_t * const restrict file1, file_t * const restric
       printf("Partial hashes match:\n   %s\n   %s\n\n", file1->d_name, file1->d_name);
 
     if (file1->size <= PARTIAL_HASH_SIZE || ISFLAG(flags, F_PARTIALONLY)) {
-      if (ISFLAG(flags, F_PARTIALONLY)) LOUD(fprintf(stderr, "checkmatch: partial only mode: treating partial hash as full hash\n"));
-      else { LOUD(fprintf(stderr, "checkmatch: small file: copying partial hash to full hash\n")); }
+      if (ISFLAG(flags, F_PARTIALONLY)) {
+        LOUD(fprintf(stderr, "checkmatch: partial only mode: treating partial hash as full hash\n"));
+      } else {
+        LOUD(fprintf(stderr, "checkmatch: small file: copying partial hash to full hash\n"));
+      }
       /* filehash_partial = filehash if file is small enough */
       if (!ISFLAG(file1->flags, F_HASH_FULL)) {
         file1->filehash = file1->filehash_partial;
@@ -1232,7 +1196,7 @@ static file_t **checkmatch(file_t * const restrict file1, file_t * const restric
         /* If partial match was correct, perform a full file hash match */
         if (!ISFLAG(file1->flags, F_HASH_FULL)) {
           filehash = get_filehash(file1, 0);
-          if (filehash == NULL) return NULL;
+          if (filehash == NULL) return 1;
 
           file1->filehash = *filehash;
           SETFLAG(file1->flags, F_HASH_FULL);
@@ -1240,7 +1204,7 @@ static file_t **checkmatch(file_t * const restrict file1, file_t * const restric
 
         if (!ISFLAG(file1->flags, F_HASH_FULL)) {
           filehash = get_filehash(file2, 0);
-          if (filehash == NULL) return NULL;
+          if (filehash == NULL) return 1;
 
           file1->filehash = *filehash;
           SETFLAG(file1->flags, F_HASH_FULL);
@@ -1263,37 +1227,16 @@ static file_t **checkmatch(file_t * const restrict file1, file_t * const restric
   }
 
   if (cmpresult != 0) {
-    if (file->next != NULL) {
-      LOUD(fprintf(stderr, "checkmatch: recursing tree: left\n"));
-      DBG(left_branch++; tree_depth++;)
-      return checkmatch(tree->left, file2);
-    } else {
-      LOUD(fprintf(stderr, "checkmatch: registering file: left\n"));
-      registerfile(file2);
-      TREE_DEPTH_UPDATE_MAX();
-      return NULL;
-    }
-  } else if (cmpresult > 0) {
-    if (tree->right != NULL) {
-      LOUD(fprintf(stderr, "checkmatch: recursing tree: right\n"));
-      DBG(right_branch++; tree_depth++;)
-      return checkmatch(tree->right, file2);
-    } else {
-      LOUD(fprintf(stderr, "checkmatch: registering file: right\n"));
-      registerfile(file2);
-      TREE_DEPTH_UPDATE_MAX();
-      return NULL;
-    }
+    LOUD(fprintf(stderr, "checkmatch: files do not appear to match\n"));
+    return 0;
   } else {
     /* All compares matched */
     DBG(partial_to_full++;)
-    TREE_DEPTH_UPDATE_MAX();
     LOUD(fprintf(stderr, "checkmatch: files appear to match based on hashes\n"));
-    if (ISFLAG(p_flags, P_FULLHASH)) printf("Full hashes match:\n   %s\n   %s\n\n", file1->d_name, file2->d_name);
-    return &file1;
+    return 1;
   }
   /* Fall through - should never be reached */
-  return NULL;
+  return 0;
 }
 
 
@@ -1411,19 +1354,19 @@ static int sort_pairs_by_filename(file_t *f1, file_t *f2)
 }
 
 
-static void registerpair(file_t **matchlist, file_t *newmatch,
+static void registerpair(file_t *curfile, file_t *newmatch,
                 int (*comparef)(file_t *f1, file_t *f2))
 {
   file_t *traverse;
   file_t *back;
 
   /* NULL pointer sanity checks */
-  if (matchlist == NULL || newmatch == NULL || comparef == NULL) nullptr("registerpair()");
-  LOUD(fprintf(stderr, "registerpair: '%s', '%s'\n", (*matchlist)->d_name, newmatch->d_name);)
+  if (curfile == NULL || newmatch == NULL || comparef == NULL) nullptr("registerpair()");
+  LOUD(fprintf(stderr, "registerpair: '%s', '%s'\n", curfile->d_name, newmatch->d_name);)
 
-  SETFLAG((*matchlist)->flags, F_HAS_DUPES);
+  SETFLAG(curfile->flags, F_HAS_DUPES);
   back = NULL;
-  traverse = *matchlist;
+  traverse = curfile;
 
   /* FIXME: This needs to be changed! As it currently stands, the compare
    * function only runs on a pair as it is registered and future pairs can
@@ -1434,7 +1377,7 @@ static void registerpair(file_t **matchlist, file_t *newmatch,
       newmatch->duplicates = traverse;
 
       if (!back) {
-        *matchlist = newmatch; /* update pointer to head of list */
+        curfile = newmatch; /* update pointer to head of list */
         SETFLAG(newmatch->flags, F_HAS_DUPES);
         CLEARFLAG(traverse->flags, F_HAS_DUPES); /* flag is only for first file in dupe chain */
       } else back->duplicates = newmatch;
@@ -1993,13 +1936,12 @@ int main(int argc, char **argv)
 
   if (ISFLAG(flags, F_REVERSESORT)) sort_direction = -1;
   if (!ISFLAG(flags, F_HIDEPROGRESS)) fprintf(stderr, "\n");
-  if (!files) {
+  if (filehead == NULL || filehead->next == NULL) {
     fwprint(stderr, "No duplicates found.", 1);
     string_malloc_destroy();
     exit(EXIT_SUCCESS);
   }
 
-  curfile = files;
   progress = 0;
 
   /* Catch CTRL-C */
@@ -2009,10 +1951,11 @@ int main(int argc, char **argv)
   signal(SIGUSR1, sigusr1);
 #endif
 
-  while (curfile) {
-    static file_t **match = NULL;
-    static FILE *file1;
-    static FILE *file2;
+  for (curfile = filehead; curfile != NULL; curfile = curfile->next) {
+    file_t *scanfile;
+    FILE *file1;
+    FILE *file2;
+    int match;
 
     if (interrupt) {
       fprintf(stderr, "\nStopping file scan due to user abort\n");
@@ -2023,21 +1966,21 @@ int main(int argc, char **argv)
 
     LOUD(fprintf(stderr, "\nMAIN: current file: %s\n", curfile->d_name));
 
-    if (!filehead) init_newfile() ; //XXX
-    else match = checkmatch(checktree, curfile);
+    scanfile = curfile->next;
+    match = checkmatch(curfile, scanfile);
 
     /* Byte-for-byte check that a matched pair are actually matched */
-    if (match != NULL) {
+    if (match == 0) {
       /* Quick or partial-only compare will never run confirmmatch()
        * Also skip match confirmation for hard-linked files
        * (This set of comparisons is ugly, but quite efficient) */
       if (ISFLAG(flags, F_QUICKCOMPARE) || ISFLAG(flags, F_PARTIALONLY) ||
            (ISFLAG(flags, F_CONSIDERHARDLINKS) &&
-           (curfile->inode == (*match)->inode) &&
-           (curfile->device == (*match)->device))
+           (curfile->inode == scanfile->inode) &&
+           (curfile->device == scanfile->device))
          ) {
         LOUD(fprintf(stderr, "MAIN: notice: hard linked, quick, or partial-only match (-H/-Q/-T)\n"));
-        registerpair(match, curfile,
+        registerpair(curfile, scanfile,
             (ordertype == ORDER_TIME) ? sort_pairs_by_mtime : sort_pairs_by_filename);
         dupecount++;
         goto skip_full_check;
@@ -2056,21 +1999,21 @@ int main(int argc, char **argv)
       }
 
 #ifdef UNICODE
-      if (!M2W((*match)->d_name, wstr)) file2 = NULL;
+      if (!M2W(scanfile->d_name, wstr)) file2 = NULL;
       else file2 = _wfopen(wstr, FILE_MODE_RO);
 #else
-      file2 = fopen((*match)->d_name, FILE_MODE_RO);
+      file2 = fopen(scanfile->d_name, FILE_MODE_RO);
 #endif
       if (!file2) {
         fclose(file1);
-        LOUD(fprintf(stderr, "MAIN: warning: file2 fopen() failed ('%s')\n", (*match)->d_name));
+        LOUD(fprintf(stderr, "MAIN: warning: file2 fopen() failed ('%s')\n", scanfile->d_name));
         curfile = curfile->next;
         continue;
       }
 
       if (confirmmatch(file1, file2, curfile->size)) {
         LOUD(fprintf(stderr, "MAIN: registering matched file pair\n"));
-        registerpair(match, curfile,
+        registerpair(curfile, scanfile,
             (ordertype == ORDER_TIME) ? sort_pairs_by_mtime : sort_pairs_by_filename);
         dupecount++;
       } DBG(else hash_fail++;)
@@ -2092,23 +2035,23 @@ skip_file_scan:
   /* Stop catching CTRL+C */
   signal(SIGINT, SIG_DFL);
   if (ISFLAG(flags, F_DELETEFILES)) {
-    if (ISFLAG(flags, F_NOPROMPT)) deletefiles(files, 0, 0);
-    else deletefiles(files, 1, stdin);
+    if (ISFLAG(flags, F_NOPROMPT)) deletefiles(filehead, 0, 0);
+    else deletefiles(filehead, 1, stdin);
   }
 #ifndef NO_SYMLINKS
-  if (ISFLAG(flags, F_MAKESYMLINKS)) linkfiles(files, 0);
+  if (ISFLAG(flags, F_MAKESYMLINKS)) linkfiles(filehead, 0);
 #endif
 #ifndef NO_HARDLINKS
-  if (ISFLAG(flags, F_HARDLINKFILES)) linkfiles(files, 1);
+  if (ISFLAG(flags, F_HARDLINKFILES)) linkfiles(filehead, 1);
 #endif /* NO_HARDLINKS */
 #ifdef ENABLE_DEDUPE
-  if (ISFLAG(flags, F_DEDUPEFILES)) dedupefiles(files);
+  if (ISFLAG(flags, F_DEDUPEFILES)) dedupefiles(filehead);
 #endif /* ENABLE_DEDUPE */
-  if (ISFLAG(flags, F_PRINTMATCHES)) printmatches(files);
-  if (ISFLAG(flags, F_PRINTJSON)) printjson(files, argc, argv);
+  if (ISFLAG(flags, F_PRINTMATCHES)) printmatches(filehead);
+  if (ISFLAG(flags, F_PRINTJSON)) printjson(filehead, argc, argv);
   if (ISFLAG(flags, F_SUMMARIZEMATCHES)) {
     if (ISFLAG(flags, F_PRINTMATCHES)) printf("\n\n");
-    summarizematches(files);
+    summarizematches(filehead);
   }
 
   string_malloc_destroy();
