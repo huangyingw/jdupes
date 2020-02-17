@@ -1170,7 +1170,6 @@ static int checkmatch(file_t * const restrict file1, file_t * const restrict fil
     if (!ISFLAG(file1->flags, F_HASH_PARTIAL)) {
       filehash = get_filehash(file1, PARTIAL_HASH_SIZE);
       if (filehash == NULL) return 0;
-
       file1->filehash_partial = *filehash;
       SETFLAG(file1->flags, F_HASH_PARTIAL);
     }
@@ -1178,7 +1177,6 @@ static int checkmatch(file_t * const restrict file1, file_t * const restrict fil
     if (!ISFLAG(file2->flags, F_HASH_PARTIAL)) {
       filehash = get_filehash(file2, PARTIAL_HASH_SIZE);
       if (filehash == NULL) return 0;
-
       file2->filehash_partial = *filehash;
       SETFLAG(file2->flags, F_HASH_PARTIAL);
     }
@@ -1190,7 +1188,7 @@ static int checkmatch(file_t * const restrict file1, file_t * const restrict fil
 
     /* Print partial hash matching pairs if requested */
     if (cmpresult == 0 && ISFLAG(p_flags, P_PARTIAL))
-      printf("Partial hashes match:\n   %s\n   %s\n\n", file1->d_name, file1->d_name);
+      printf("Partial hashes match:\n   %s\n   %s\n\n", file1->d_name, file2->d_name);
 
     if (file1->size <= PARTIAL_HASH_SIZE || ISFLAG(flags, F_PARTIALONLY)) {
       if (ISFLAG(flags, F_PARTIALONLY)) {
@@ -1204,9 +1202,9 @@ static int checkmatch(file_t * const restrict file1, file_t * const restrict fil
         SETFLAG(file1->flags, F_HASH_FULL);
         DBG(small_file++;)
       }
-      if (!ISFLAG(file1->flags, F_HASH_FULL)) {
-        file1->filehash = file1->filehash_partial;
-        SETFLAG(file1->flags, F_HASH_FULL);
+      if (!ISFLAG(file2->flags, F_HASH_FULL)) {
+        file2->filehash = file2->filehash_partial;
+        SETFLAG(file2->flags, F_HASH_FULL);
         DBG(small_file++;)
       }
     } else if (cmpresult == 0) {
@@ -1218,17 +1216,15 @@ static int checkmatch(file_t * const restrict file1, file_t * const restrict fil
         if (!ISFLAG(file1->flags, F_HASH_FULL)) {
           filehash = get_filehash(file1, 0);
           if (filehash == NULL) return 0;
-
           file1->filehash = *filehash;
           SETFLAG(file1->flags, F_HASH_FULL);
         }
 
-        if (!ISFLAG(file1->flags, F_HASH_FULL)) {
+        if (!ISFLAG(file2->flags, F_HASH_FULL)) {
           filehash = get_filehash(file2, 0);
           if (filehash == NULL) return 0;
-
-          file1->filehash = *filehash;
-          SETFLAG(file1->flags, F_HASH_FULL);
+          file2->filehash = *filehash;
+          SETFLAG(file2->flags, F_HASH_FULL);
         }
 
         /* Full file hash comparison */
