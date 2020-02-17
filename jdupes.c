@@ -204,12 +204,12 @@ static struct travdone *travdone_head = NULL;
 /* Extended filter tree head and static tag list */
 struct extfilter *extfilter_head = NULL;
 const struct extfilter_tags extfilter_tags[] = {
-  { "dir",	X_DIR },
-  { "size+",	X_SIZE_GT },
-  { "size+=",	X_SIZE_GTEQ },
-  { "size-=",	X_SIZE_LTEQ },
-  { "size-",	X_SIZE_LT },
-  { "size=",	X_SIZE_EQ },
+  { "dir",        X_DIR },
+  { "size+",        X_SIZE_GT },
+  { "size+=",        X_SIZE_GTEQ },
+  { "size-=",        X_SIZE_LTEQ },
+  { "size-",        X_SIZE_LT },
+  { "size=",        X_SIZE_EQ },
   { NULL, 0 },
 };
 
@@ -1147,6 +1147,7 @@ static int checkmatch(file_t * const restrict file1, file_t * const restrict fil
  * hard links as duplicates, we just return 0 */
 
   cmpresult = check_conditions(file1, file2);
+  LOUD(fprintf(stderr, "check_conditions returned %d\n", cmpresult);)
   switch (cmpresult) {
     case 2: return 1;  /* linked files + -H switch */
     case -2: return 0;  /* linked files, no -H switch */
@@ -1182,7 +1183,7 @@ static int checkmatch(file_t * const restrict file1, file_t * const restrict fil
       SETFLAG(file2->flags, F_HASH_PARTIAL);
     }
 
-    cmpresult = HASH_COMPARE(file1->filehash_partial, file1->filehash_partial);
+    cmpresult = HASH_COMPARE(file1->filehash_partial, file2->filehash_partial);
     LOUD(if (!cmpresult) fprintf(stderr, "checkmatch: partial hashes match\n"));
     LOUD(if (cmpresult) fprintf(stderr, "checkmatch: partial hashes do not match\n"));
     DBG(partial_hash++;)
@@ -1210,7 +1211,7 @@ static int checkmatch(file_t * const restrict file1, file_t * const restrict fil
       }
     } else if (cmpresult == 0) {
       if (ISFLAG(flags, F_SKIPHASH)) {
-	/* Skip full file hashing if requested by the user */
+        /* Skip full file hashing if requested by the user */
         LOUD(fprintf(stderr, "checkmatch: skipping full file hashes (F_SKIPMATCH)\n"));
       } else {
         /* If partial match was correct, perform a full file hash match */
@@ -1339,7 +1340,7 @@ extern unsigned int get_max_dupes(const file_t *files, unsigned int * const rest
  * Return value is one end of the list that file1 is within
  * direction: 0 = return last item, 1 = return first item */
 static file_t *match_list_verify(file_t *file1,
-		const file_t * const restrict file2, int direction)
+                const file_t * const restrict file2, int direction)
 {
   file_t *scan;
   file_t *start;
@@ -1347,14 +1348,12 @@ static file_t *match_list_verify(file_t *file1,
   /* Go to the start of the list, watching for an infinite loop */
   scan = file1;
   while (scan->dupe_prev != NULL && scan->dupe_prev != file1) scan = scan->dupe_prev;
-#if 0
   if (scan->dupe_prev == file1) {
     /* Break circular reference and warn the user */
     fprintf(stderr, "warning: circular reference in registerpair(), report this as a bug\n");
     scan->dupe_prev->dupe_next = NULL;
     scan->dupe_prev = NULL;
   }
-#endif
   start = scan;
 
   /* Check to see if file2 is in the current (file1) match list */
@@ -1399,8 +1398,8 @@ static void registerpair(file_t *file1, file_t *file2)
   list1->dupe_next = list2;
   list2->dupe_prev = list1;
   LOUD(fprintf(stderr, "registerpair: after register: file %p(->%p,%p), %p(->%p,%p), list %p(->%p,%p), %p(->%p,%p)\n",
-			  file1, file1->dupe_prev, file1->dupe_next, file2, file2->dupe_prev, file2->dupe_next,
-			  list1, list1->dupe_prev, list1->dupe_next, list2, list2->dupe_prev, list2->dupe_next);)
+                          file1, file1->dupe_prev, file1->dupe_next, file2, file2->dupe_prev, file2->dupe_next,
+                          list1, list1->dupe_prev, list1->dupe_next, list2, list2->dupe_prev, list2->dupe_next);)
 
   return;
 }
@@ -2017,8 +2016,10 @@ int main(int argc, char **argv)
       LOUD(fprintf(stderr, "MAIN: scanfile: cur %p->%p, scan %p->%p\n", curfile, curfile->next, scanfile, scanfile->next));
       match = checkmatch(curfile, scanfile);
 
+      LOUD(fprintf(stderr, "MAIN: match = %d\n", match));
       /* Byte-for-byte check that a matched pair are actually matched */
       if (match == 1) {
+        LOUD(fprintf(stderr, "MAIN: entering match confirmation\n"));
         /* Quick or partial-only compare will never run confirmmatch()
          * Also skip match confirmation for hard-linked files
          * (This set of comparisons is ugly, but quite efficient) */
@@ -2069,6 +2070,7 @@ int main(int argc, char **argv)
         fclose(file2);
       }
 
+      LOUD(fprintf(stderr, "MAIN: scanfile->next\n"));
       scanfile = scanfile->next;
     }   /* scanfile */
 
