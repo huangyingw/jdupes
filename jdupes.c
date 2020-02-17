@@ -1232,7 +1232,7 @@ static int checkmatch(file_t * const restrict file1, file_t * const restrict fil
         }
 
         /* Full file hash comparison */
-        cmpresult = HASH_COMPARE(file1->filehash, file1->filehash);
+        cmpresult = HASH_COMPARE(file1->filehash, file2->filehash);
         LOUD(if (!cmpresult) fprintf(stderr, "checkmatch: full hashes match\n"));
         LOUD(if (cmpresult) fprintf(stderr, "checkmatch: full hashes do not match\n"));
         DBG(full_hash++);
