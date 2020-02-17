@@ -703,7 +703,8 @@ static file_t *init_newfile(const size_t len)
 #endif
   newfile->size = -1;
   newfile->next = NULL;
-  newfile->duplicates = NULL;
+  newfile->dupe_prev = NULL;
+  newfile->dupe_next = NULL;
   return newfile;
 }
 
@@ -711,6 +712,11 @@ static file_t *init_newfile(const size_t len)
 /* Attach new file to the end of the file list */
 static void connect_newfile(file_t * const restrict newfile)
 {
+  LOUD(fprintf(stderr, "connect_newfile(%p, h %p t %p)\n", newfile, filehead, filetail));
+  if (newfile == filehead || newfile == filetail) {
+    LOUD(fprintf(stderr, "connect_newfile: newfile and filehead/filetail are the same!\n");)
+    return;
+  }
   if (filehead == NULL) filehead = newfile;
   else filetail->next = newfile;
   filetail = newfile;
@@ -770,7 +776,6 @@ static inline file_t *grokfile(const char * const restrict name)
     string_free(newfile);
     return NULL;
   }
-  connect_newfile(newfile);
   return newfile;
 }
 
@@ -1342,12 +1347,14 @@ static file_t *match_list_verify(file_t *file1,
   /* Go to the start of the list, watching for an infinite loop */
   scan = file1;
   while (scan->dupe_prev != NULL && scan->dupe_prev != file1) scan = scan->dupe_prev;
+#if 0
   if (scan->dupe_prev == file1) {
     /* Break circular reference and warn the user */
     fprintf(stderr, "warning: circular reference in registerpair(), report this as a bug\n");
     scan->dupe_prev->dupe_next = NULL;
     scan->dupe_prev = NULL;
   }
+#endif
   start = scan;
 
   /* Check to see if file2 is in the current (file1) match list */
@@ -1371,13 +1378,15 @@ static void registerpair(file_t *file1, file_t *file2)
 
   /* Pointer sanity checks */
   if (file1 == NULL || file2 == NULL) nullptr("registerpair()");
-  LOUD(fprintf(stderr, "registerpair: '%s', '%s'\n", file1->d_name, file2->d_name);)
+  LOUD(fprintf(stderr, "registerpair: (%p, %p) '%s', '%s'\n", file1, file2, file1->d_name, file2->d_name);)
   if (file1 == file2) return;
 
   /* For files with no match lists yet, link the pair immediately */
   if (file1->dupe_prev == NULL && file1->dupe_next == NULL && file2->dupe_prev == NULL && file2->dupe_next == NULL) {
+  LOUD(fprintf(stderr, "registerpair: quick register %p(->%p,%p), %p(->%p,%p)\n", file1, file1->dupe_prev, file1->dupe_next, file2, file2->dupe_prev, file2->dupe_next);)
     file1->dupe_next = file2;
     file2->dupe_prev = file1;
+  LOUD(fprintf(stderr, "registerpair: after register %p(->%p,%p), %p(->%p,%p)\n", file1, file1->dupe_prev, file1->dupe_next, file2, file2->dupe_prev, file2->dupe_next);)
     return;
   }
 
@@ -1386,8 +1395,12 @@ static void registerpair(file_t *file1, file_t *file2)
   if (list1 == NULL) return;
   list2 = match_list_verify(file2, file1, 1);
   if (list2 == NULL) return;
+  LOUD(fprintf(stderr, "registerpair: normal register %p, %p for %p, %p\n", list1, list2, file1, file2);)
   list1->dupe_next = list2;
   list2->dupe_prev = list1;
+  LOUD(fprintf(stderr, "registerpair: after register: file %p(->%p,%p), %p(->%p,%p), list %p(->%p,%p), %p(->%p,%p)\n",
+			  file1, file1->dupe_prev, file1->dupe_next, file2, file2->dupe_prev, file2->dupe_next,
+			  list1, list1->dupe_prev, list1->dupe_next, list2, list2->dupe_prev, list2->dupe_next);)
 
   return;
 }
@@ -1998,9 +2011,10 @@ int main(int argc, char **argv)
 
     scanfile = curfile->next;
 
-    while (scanfile) {
+    while (scanfile && scanfile != curfile) {
 //fprintf(stderr, "cf %p->%p, sf %p->%p\n", curfile, curfile->next, scanfile, scanfile->next);
-      LOUD(fprintf(stderr, "MAIN: scanfile: %s\n", scanfile->d_name));
+      LOUD(fprintf(stderr, "MAIN: scanfile: %s = %s\n", curfile->d_name, scanfile->d_name));
+      LOUD(fprintf(stderr, "MAIN: scanfile: cur %p->%p, scan %p->%p\n", curfile, curfile->next, scanfile, scanfile->next));
       match = checkmatch(curfile, scanfile);
 
       /* Byte-for-byte check that a matched pair are actually matched */
