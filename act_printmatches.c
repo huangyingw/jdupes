@@ -8,7 +8,7 @@
 #include "jody_win_unicode.h"
 #include "act_printmatches.h"
 
-extern void printmatches(file_t * restrict files)
+extern void printmatches(file_t *files)
 {
   file_t * restrict tmpfile;
   int printed = 0;
@@ -19,17 +19,17 @@ extern void printmatches(file_t * restrict files)
   if (ISFLAG(flags, F_PRINTNULL)) cr = 2;
 
   while (files != NULL) {
-    if (ISFLAG(files->flags, F_HAS_DUPES)) {
+    if (ISFLAG(files->flags, F_DUPE_HEAD)) {
       printed = 1;
       if (!ISFLAG(flags, F_OMITFIRST)) {
         if (ISFLAG(flags, F_SHOWSIZE)) printf("%" PRIdMAX " byte%c each:\n", (intmax_t)files->size,
          (files->size != 1) ? 's' : ' ');
         fwprint(stdout, files->d_name, cr);
       }
-      tmpfile = files->duplicates;
+      tmpfile = files->dupe_next;
       while (tmpfile != NULL) {
         fwprint(stdout, tmpfile->d_name, cr);
-        tmpfile = tmpfile->duplicates;
+        tmpfile = tmpfile->dupe_next;
       }
       if (files->next != NULL) fwprint(stdout, "", cr);
 

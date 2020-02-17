@@ -146,8 +146,10 @@ extern uint_fast32_t flags;
 #define F_VALID_STAT		(1U << 0)
 #define F_HASH_PARTIAL		(1U << 1)
 #define F_HASH_FULL		(1U << 2)
-#define F_HAS_DUPES		(1U << 3)
-#define F_IS_SYMLINK		(1U << 4)
+#define F_IS_SYMLINK		(1U << 3)
+#define F_HAS_DUPES		(1U << 4)
+#define F_DUPE_HEAD		(1U << 5)
+#define F_FINALIZED		(1U << 6)
 
 /* Extra print flags */
 #define P_PARTIAL		(1U << 0)
@@ -175,8 +177,11 @@ typedef enum {
 
 /* Per-file information */
 typedef struct _file {
-  struct _file *duplicates;
+  struct _file *duplicates; //DELETEME XXX
+  struct _file *dupe_prev;
+  struct _file *dupe_next;
   struct _file *next;
+  uint32_t seq;  /* File load order sequence number */
   char *d_name;
   dev_t device;
   jdupes_mode_t mode;
@@ -187,7 +192,7 @@ typedef struct _file {
   time_t mtime;
   uint32_t flags;  /* Status flags */
 #ifndef NO_USER_ORDER
-  unsigned int user_order; /* Order of the originating command-line parameter */
+  unsigned int user_order;  /* Parameter order */
 #endif
 #ifndef NO_HARDLINKS
  #ifndef ON_WINDOWS

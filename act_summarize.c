@@ -16,13 +16,13 @@ extern void summarizematches(const file_t * restrict files)
   while (files != NULL) {
     file_t *tmpfile;
 
-    if (ISFLAG(files->flags, F_HAS_DUPES)) {
+    if (ISFLAG(files->flags, F_DUPE_HEAD)) {
       numsets++;
-      tmpfile = files->duplicates;
+      tmpfile = files->dupe_next;
       while (tmpfile != NULL) {
         numfiles++;
         numbytes += files->size;
-        tmpfile = tmpfile->duplicates;
+        tmpfile = tmpfile->dupe_next;
       }
     }
     files = files->next;

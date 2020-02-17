@@ -379,6 +379,7 @@ static void update_progress(const char * const restrict msg, const int file_perc
   return;
 }
 
+
 /* Check file's stat() info to make sure nothing has changed
  * Returns 1 if changed, 0 if not changed, negative if error */
 extern int file_has_changed(file_t * const restrict file)
@@ -684,6 +685,7 @@ static int check_singlefile(file_t * const restrict newfile)
 }
 
 
+/* Initialize a new file entry, but don't connect to the file list */
 static file_t *init_newfile(const size_t len)
 {
   file_t * const restrict newfile = (file_t *)string_malloc(sizeof(file_t));
@@ -696,9 +698,6 @@ static file_t *init_newfile(const size_t len)
   newfile->d_name = (char *)string_malloc(len);
   if (!newfile->d_name) oom("init_newfile() filename");
 
-  if (filehead == NULL) filehead = newfile;
-  else filetail->next = newfile;
-  filetail = newfile;
 #ifndef NO_USER_ORDER
   newfile->user_order = user_item_count;
 #endif
@@ -706,6 +705,16 @@ static file_t *init_newfile(const size_t len)
   newfile->next = NULL;
   newfile->duplicates = NULL;
   return newfile;
+}
+
+
+/* Attach new file to the end of the file list */
+static void connect_newfile(file_t * const restrict newfile)
+{
+  if (filehead == NULL) filehead = newfile;
+  else filetail->next = newfile;
+  filetail = newfile;
+  return;
 }
 
 
@@ -761,6 +770,7 @@ static inline file_t *grokfile(const char * const restrict name)
     string_free(newfile);
     return NULL;
   }
+  connect_newfile(newfile);
   return newfile;
 }
 
@@ -949,6 +959,7 @@ add_single_file:
 #else
       if (S_ISREG(newfile->mode)) {
 #endif
+        connect_newfile(newfile);
         filecount++;
         progress++;
 
@@ -1304,11 +1315,13 @@ extern unsigned int get_max_dupes(const file_t *files, unsigned int * const rest
 
   while (files) {
     unsigned int n_dupes;
-    if (ISFLAG(files->flags, F_HAS_DUPES)) {
+    file_t *curdupe;
+// XXX
+    if (ISFLAG(files->flags, F_DUPE_HEAD)) {
       groups++;
       if (n_files && files->size) (*n_files)++;
       n_dupes = 1;
-      for (file_t *curdupe = files->duplicates; curdupe; curdupe = curdupe->duplicates) n_dupes++;
+      for (; curdupe; curdupe = curdupe->dupe_next) n_dupes++;
       if (n_dupes > *max) *max = n_dupes;
     }
     files = files->next;
@@ -1317,89 +1330,99 @@ extern unsigned int get_max_dupes(const file_t *files, unsigned int * const rest
 }
 
 
-#ifndef NO_USER_ORDER
-static int sort_pairs_by_param_order(file_t *f1, file_t *f2)
+/* Sanity check a match list for match registration
+ * Return value is one end of the list that file1 is within
+ * direction: 0 = return last item, 1 = return first item */
+static file_t *match_list_verify(file_t *file1,
+		const file_t * const restrict file2, int direction)
 {
-  if (!ISFLAG(flags, F_USEPARAMORDER)) return 0;
-  if (f1 == NULL || f2 == NULL) nullptr("sort_pairs_by_param_order()");
-  if (f1->user_order < f2->user_order) return -sort_direction;
-  if (f1->user_order > f2->user_order) return sort_direction;
-  return 0;
-}
-#endif
+  file_t *scan;
+  file_t *start;
 
+  /* Go to the start of the list, watching for an infinite loop */
+  scan = file1;
+  while (scan->dupe_prev != NULL && scan->dupe_prev != file1) scan = scan->dupe_prev;
+  if (scan->dupe_prev == file1) {
+    /* Break circular reference and warn the user */
+    fprintf(stderr, "warning: circular reference in registerpair(), report this as a bug\n");
+    scan->dupe_prev->dupe_next = NULL;
+    scan->dupe_prev = NULL;
+  }
+  start = scan;
 
-static int sort_pairs_by_mtime(file_t *f1, file_t *f2)
-{
-  if (f1 == NULL || f2 == NULL) nullptr("sort_pairs_by_mtime()");
+  /* Check to see if file2 is in the current (file1) match list */
+  while (scan->dupe_next != NULL && scan->dupe_next != file2) scan = scan->dupe_next;
+  if (scan->dupe_next == file2) {
+    /* Files are already in the same match list */
+    LOUD(fprintf(stderr, "registerpair: files are already in the same match list\n");)
+    return NULL;
+  }
 
-#ifndef NO_USER_ORDER
-  int po = sort_pairs_by_param_order(f1, f2);
-  if (po != 0) return po;
-#endif /* NO_USER_ORDER */
-
-  if (f1->mtime < f2->mtime) return -sort_direction;
-  else if (f1->mtime > f2->mtime) return sort_direction;
-
-  return 0;
-}
-
-
-static int sort_pairs_by_filename(file_t *f1, file_t *f2)
-{
-  if (f1 == NULL || f2 == NULL) nullptr("sort_pairs_by_filename()");
-
-#ifndef NO_USER_ORDER
-  int po = sort_pairs_by_param_order(f1, f2);
-  if (po != 0) return po;
-#endif /* NO_USER_ORDER */
-
-  return numeric_sort(f1->d_name, f2->d_name, sort_direction);
+  /* Match list has no circular references and match isn't already registered */
+  if (direction == 1) return start;
+  else return scan;
 }
 
 
-static void registerpair(file_t *curfile, file_t *newmatch,
-                int (*comparef)(file_t *f1, file_t *f2))
+/* Register a pair of matching files */
+static void registerpair(file_t *file1, file_t *file2)
 {
-  file_t *traverse;
-  file_t *back;
+  file_t *list1, *list2;
 
-  /* NULL pointer sanity checks */
-  if (curfile == NULL || newmatch == NULL || comparef == NULL) nullptr("registerpair()");
-  LOUD(fprintf(stderr, "registerpair: '%s', '%s'\n", curfile->d_name, newmatch->d_name);)
+  /* Pointer sanity checks */
+  if (file1 == NULL || file2 == NULL) nullptr("registerpair()");
+  LOUD(fprintf(stderr, "registerpair: '%s', '%s'\n", file1->d_name, file2->d_name);)
+  if (file1 == file2) return;
 
-  SETFLAG(curfile->flags, F_HAS_DUPES);
-  back = NULL;
-  traverse = curfile;
+  /* For files with no match lists yet, link the pair immediately */
+  if (file1->dupe_prev == NULL && file1->dupe_next == NULL && file2->dupe_prev == NULL && file2->dupe_next == NULL) {
+    file1->dupe_next = file2;
+    file2->dupe_prev = file1;
+    return;
+  }
 
-  /* FIXME: This needs to be changed! As it currently stands, the compare
-   * function only runs on a pair as it is registered and future pairs can
-   * mess up the sort order. A separate sorting function should happen before
-   * the dupe chain is acted upon rather than while pairs are registered. */
-  while (traverse) {
-    if (comparef(newmatch, traverse) <= 0) {
-      newmatch->duplicates = traverse;
+  /* Run sanity checks on both match lists, then link them together */
+  list1 = match_list_verify(file1, file2, 0);
+  if (list1 == NULL) return;
+  list2 = match_list_verify(file2, file1, 1);
+  if (list2 == NULL) return;
+  list1->dupe_next = list2;
+  list2->dupe_prev = list1;
 
-      if (!back) {
-        curfile = newmatch; /* update pointer to head of list */
-        SETFLAG(newmatch->flags, F_HAS_DUPES);
-        CLEARFLAG(traverse->flags, F_HAS_DUPES); /* flag is only for first file in dupe chain */
-      } else back->duplicates = newmatch;
+  return;
+}
 
-      break;
+
+/* Normalize F_DUPE_HEAD and F_HAS_DUPES for all files */
+void normalize_match_flags(file_t *file)
+{
+  file_t *scan;
+  LOUD(fprintf(stderr, "normalize_match_flags(%p)\n", file);)
+
+  while (file != NULL) {
+    /* Skip files that have already been touched */
+    if ISFLAG(file->flags, F_FINALIZED) goto skip_file;
+
+    /* Files with no duplicates linked should be un-flagged */
+    if (file->dupe_prev == NULL && file->dupe_next == NULL) {
+      SETFLAG(file->flags, F_FINALIZED);
+      CLEARFLAG(file->flags, (F_DUPE_HEAD | F_HAS_DUPES));
+      goto skip_file;
     } else {
-      if (traverse->duplicates == NULL) {
-        traverse->duplicates = newmatch;
-        if (!back) SETFLAG(traverse->flags, F_HAS_DUPES);
-
-        break;
+      /* Set flags properly for all duplicate lists */
+      scan = file;
+      while (scan->dupe_prev != NULL) scan = scan->dupe_prev;  /* rewind */
+      SETFLAG(scan->flags, F_FINALIZED | F_DUPE_HEAD | F_HAS_DUPES);
+      while (scan->dupe_next != NULL) {
+        scan = scan->dupe_next;
+        CLEARFLAG(scan->flags, F_DUPE_HEAD);
+        SETFLAG(scan->flags, F_FINALIZED | F_HAS_DUPES);
       }
     }
 
-    back = traverse;
-    traverse = traverse->duplicates;
+skip_file:
+    file = file->next;
   }
-  LOUD(fprintf(stderr, "registerpair end\n", curfile->d_name, newmatch->d_name);)
   return;
 }
 
@@ -1976,7 +1999,7 @@ int main(int argc, char **argv)
     scanfile = curfile->next;
 
     while (scanfile) {
-fprintf(stderr, "cf %p->%p, sf %p->%p\n", curfile, curfile->next, scanfile, scanfile->next);
+//fprintf(stderr, "cf %p->%p, sf %p->%p\n", curfile, curfile->next, scanfile, scanfile->next);
       LOUD(fprintf(stderr, "MAIN: scanfile: %s\n", scanfile->d_name));
       match = checkmatch(curfile, scanfile);
 
@@ -1991,8 +2014,7 @@ fprintf(stderr, "cf %p->%p, sf %p->%p\n", curfile, curfile->next, scanfile, scan
              (curfile->device == scanfile->device))
            ) {
           LOUD(fprintf(stderr, "MAIN: notice: hard linked, quick, or partial-only match (-H/-Q/-T)\n"));
-          registerpair(curfile, scanfile,
-              (ordertype == ORDER_TIME) ? sort_pairs_by_mtime : sort_pairs_by_filename);
+          registerpair(curfile, scanfile);
           dupecount++;
           scanfile = scanfile->next;
           continue;
@@ -2025,8 +2047,7 @@ fprintf(stderr, "cf %p->%p, sf %p->%p\n", curfile, curfile->next, scanfile, scan
 
         if (confirmmatch(file1, file2, curfile->size)) {
           LOUD(fprintf(stderr, "MAIN: registering matched file pair\n"));
-          registerpair(curfile, scanfile,
-              (ordertype == ORDER_TIME) ? sort_pairs_by_mtime : sort_pairs_by_filename);
+          registerpair(curfile, scanfile);
           dupecount++;
         } DBG(else hash_fail++;)
 
@@ -2049,6 +2070,7 @@ fprintf(stderr, "cf %p->%p, sf %p->%p\n", curfile, curfile->next, scanfile, scan
 skip_file_scan:
   /* Stop catching CTRL+C */
   signal(SIGINT, SIG_DFL);
+  normalize_match_flags(filehead);
   if (ISFLAG(flags, F_DELETEFILES)) {
     if (ISFLAG(flags, F_NOPROMPT)) deletefiles(filehead, 0, 0);
     else deletefiles(filehead, 1, stdin);
