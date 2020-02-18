@@ -709,7 +709,7 @@ static file_t *init_newfile(const size_t len)
 }
 
 
-/* Attach new file to the end of the file list */
+/* Add new file to the file list */
 static void connect_newfile(file_t * const restrict newfile)
 {
   LOUD(fprintf(stderr, "connect_newfile(%p, h %p t %p)\n", newfile, filehead, filetail));
@@ -1318,7 +1318,6 @@ extern unsigned int get_max_dupes(const file_t *files, unsigned int * const rest
   while (files) {
     unsigned int n_dupes;
     file_t *curdupe;
-// XXX
     if (ISFLAG(files->flags, F_DUPE_HEAD)) {
       groups++;
       if (n_files && files->size) (*n_files)++;
@@ -1340,6 +1339,10 @@ static file_t *match_list_verify(file_t *file1,
 {
   file_t *scan;
   file_t *start;
+
+  /* If neither file has matches yet, no need to do extra work */
+  if (file1->dupe_prev == NULL && file1->dupe_next == NULL && file2->dupe_prev == NULL && file2->dupe_next == NULL)
+    return file1;
 
   /* Go to the start of the list, watching for an infinite loop */
   scan = file1;
@@ -1375,6 +1378,9 @@ static void registerpair(file_t *file1, file_t *file2)
   if (file1 == NULL || file2 == NULL) nullptr("registerpair()");
   LOUD(fprintf(stderr, "registerpair: (%p, %p) '%s', '%s'\n", file1, file2, file1->d_name, file2->d_name);)
   if (file1 == file2) return;
+
+  SETFLAG(file1->flags, F_HAS_DUPES);
+  SETFLAG(file2->flags, F_HAS_DUPES);
 
   /* For files with no match lists yet, link the pair immediately */
   if (file1->dupe_prev == NULL && file1->dupe_next == NULL && file2->dupe_prev == NULL && file2->dupe_next == NULL) {
@@ -2010,6 +2016,13 @@ int main(int argc, char **argv)
 //fprintf(stderr, "cf %p->%p, sf %p->%p\n", curfile, curfile->next, scanfile, scanfile->next);
       LOUD(fprintf(stderr, "MAIN: scanfile: %s = %s\n", curfile->d_name, scanfile->d_name));
       LOUD(fprintf(stderr, "MAIN: scanfile: cur %p->%p, scan %p->%p\n", curfile, curfile->next, scanfile, scanfile->next));
+      /* Any file with matches is implicitly not a match to curfile */
+      if (ISFLAG(scanfile->flags, F_HAS_DUPES)) {
+        LOUD(fprintf(stderr, "MAIN: scanfile: has dupes, skipping: %s\n", scanfile->d_name);)
+        scanfile = scanfile->next;
+        continue;
+      }
+
       match = checkmatch(curfile, scanfile);
 
       LOUD(fprintf(stderr, "MAIN: match = %d\n", match));

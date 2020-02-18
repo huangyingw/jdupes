@@ -177,12 +177,12 @@ typedef enum {
 
 /* Per-file information */
 typedef struct _file {
-  struct _file *duplicates; //DELETEME XXX
+  struct _file *next;
+  uint_fast32_t flags;  /* Status flags */
   struct _file *dupe_prev;
   struct _file *dupe_next;
-  struct _file *next;
-  uint32_t seq;  /* File load order sequence number */
   char *d_name;
+  uint32_t seq;  /* File load order sequence number */
   dev_t device;
   jdupes_mode_t mode;
   off_t size;
@@ -190,7 +190,6 @@ typedef struct _file {
   jdupes_hash_t filehash_partial;
   jdupes_hash_t filehash;
   time_t mtime;
-  uint32_t flags;  /* Status flags */
 #ifndef NO_USER_ORDER
   unsigned int user_order;  /* Parameter order */
 #endif
@@ -205,6 +204,7 @@ typedef struct _file {
   uid_t uid;
   gid_t gid;
 #endif
+  struct _file *duplicates; //DELETEME XXX
 } file_t;
 
 /* This gets used in many functions */
