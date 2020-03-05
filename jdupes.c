@@ -1272,13 +1272,26 @@ static file_t **checkmatch(filetree_t * restrict tree, file_t * const restrict f
     } else {
       DBG(partial_elim++);
     }
-  }
+  }  /* if (cmpresult == 0) */
 
   if ((cantmatch != 0) && (cmpresult == 0)) {
     LOUD(fprintf(stderr, "checkmatch: rejecting because match not allowed (cantmatch = 1)\n"));
     cmpresult = -1;
   }
 
+  /* How the file tree works
+   *
+   * The tree is sorted by size as files arrive. If the files are the same
+   * size, they are possible duplicates and are checked for duplication.
+   * If they are not a match, the hashes are used to decide whether to
+   * continue with the file to the left or the right in the file tree.
+   * If the direction decision points to a leaf node, the duplicate scan
+   * continues down that path; if it points to an empty node, the current
+   * file is attached to the file tree at that point.
+   *
+   * This allows for quickly finding files of the same size by avoiding
+   * tree branches with differing size groups.
+   */
   if (cmpresult < 0) {
     if (tree->left != NULL) {
       LOUD(fprintf(stderr, "checkmatch: recursing tree: left\n"));
@@ -1868,7 +1881,7 @@ int main(int argc, char **argv)
           c++;
         }
       } else printf(" none");
-      printf("\nCopyright (C) 2015-2020 by Jody Bruchon and contributors");
+      printf("\nCopyright (C) 2015-2020 by Jody Bruchon and contributors\n");
       printf("Forked from fdupes 1.51, (C) 1999-2014 Adrian Lopez and contributors\n");
       printf("\nPermission is hereby granted, free of charge, to any person\n");
       printf("obtaining a copy of this software and associated documentation files\n");
