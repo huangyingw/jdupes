@@ -16,3 +16,7 @@
     message = n
 [vrun]
     silent = false
+[gdif]
+    ignore = ./install.sh
+    ignore = ./testdir/unicode_dirnames/*
+    ignore = ./testdir/unicode_filenames/*
