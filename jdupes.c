@@ -714,7 +714,7 @@ static file_t *init_newfile(const size_t len, file_t * restrict * const restrict
 
 
 /* Create a new traversal check object and initialize its values */
-static struct travdone *travdone_alloc(const jdupes_ino_t inode, const dev_t device)
+static struct travdone *travdone_alloc(const dev_t device, const jdupes_ino_t inode)
 {
   struct travdone *trav;
 
@@ -745,6 +745,51 @@ static void travdone_free(struct travdone * const restrict cur)
 }
 
 
+/* Check to see if device:inode pair has already been traversed */
+static int traverse_check(const dev_t device, const jdupes_ino_t inode)
+{
+  struct travdone *traverse = travdone_head;
+
+  if (travdone_head == NULL) {
+    travdone_head = travdone_alloc(device, inode);
+    if (travdone_head == NULL) return 2;
+  } else {
+    traverse = travdone_head;
+    while (1) {
+      if (traverse == NULL) nullptr("traverse_check()");
+      /* Don't re-traverse directories we've already seen */
+      if (inode == traverse->inode && device == traverse->device) {
+        LOUD(fprintf(stderr, "traverse_check: already seen: %ld:%ld\n", device,inode);)
+        return 1;
+      } else if (inode > traverse->inode || (inode == traverse->inode && device > traverse->device)) {
+        /* Traverse right */
+        if (traverse->right == NULL) {
+          LOUD(fprintf(stderr, "traverse item right: %ld:%ld\n", device, inode);)
+          traverse->right = travdone_alloc(device, inode);
+          if (traverse->right == NULL) return 2;
+          break;
+        }
+        traverse = traverse->right;
+        continue;
+      } else {
+        /* Traverse left */
+        if (traverse->left == NULL) {
+          LOUD(fprintf(stderr, "traverse item left %ld,%ld\n", device, inode);)
+          traverse->left = travdone_alloc(device, inode);
+          if (traverse->left == NULL) return 2;
+          break;
+        }
+        traverse = traverse->left;
+        continue;
+      }
+    }
+  }
+  return 0;
+}
+
+
+/* This is disabled until a check is in place to make it safe */
+#if 0
 /* Add a single file to the file tree */
 static inline file_t *grokfile(const char * const restrict name, file_t * restrict * const restrict filelistp)
 {
@@ -767,6 +812,7 @@ static inline file_t *grokfile(const char * const restrict name, file_t * restri
   }
   return newfile;
 }
+#endif
 
 
 /* Load a directory's contents into the file tree, recursing as needed */
@@ -778,7 +824,6 @@ static void grokdir(const char * const restrict dir,
   struct dirent *dirinfo;
   static int grokdir_level = 0;
   size_t dirlen;
-  struct travdone *traverse;
   int i, single = 0;
   jdupes_ino_t inode;
   dev_t device, n_device;
@@ -794,50 +839,16 @@ static void grokdir(const char * const restrict dir,
   if (dir == NULL || filelistp == NULL) nullptr("grokdir()");
   LOUD(fprintf(stderr, "grokdir: scanning '%s' (order %d, recurse %d)\n", dir, user_item_count, recurse));
 
-  /* Double traversal prevention tree */
+  /* Get directory stats (or file stats if it's a file) */
   i = getdirstats(dir, &inode, &device, &mode);
   if (i < 0) goto error_travdone;
-
-  if (travdone_head == NULL) {
-    travdone_head = travdone_alloc(inode, device);
-    if (travdone_head == NULL) goto error_travdone;
-  } else {
-    traverse = travdone_head;
-    while (1) {
-      if (traverse == NULL) nullptr("grokdir() traverse");
-      /* Don't re-traverse directories we've already seen */
-      if (S_ISDIR(mode) && inode == traverse->inode && device == traverse->device) {
-        LOUD(fprintf(stderr, "already seen item '%s', skipping\n", dir);)
-        return;
-      } else if (inode > traverse->inode || (inode == traverse->inode && device > traverse->device)) {
-        /* Traverse right */
-        if (traverse->right == NULL) {
-          LOUD(fprintf(stderr, "traverse item right '%s'\n", dir);)
-          traverse->right = travdone_alloc(inode, device);
-          if (traverse->right == NULL) goto error_travdone;
-          break;
-        }
-        traverse = traverse->right;
-        continue;
-      } else {
-        /* Traverse left */
-        if (traverse->left == NULL) {
-          LOUD(fprintf(stderr, "traverse item left '%s'\n", dir);)
-          traverse->left = travdone_alloc(inode, device);
-          if (traverse->left == NULL) goto error_travdone;
-          break;
-        }
-        traverse = traverse->left;
-        continue;
-      }
-    }
-  }
-
-  item_progress++;
-  grokdir_level++;
-
   /* if dir is actually a file, just add it to the file tree */
   if (i == 1) {
+/* Single file addition is disabled for now because there is no safeguard
+ * against the file being compared against itself if it's added in both a
+ * recursion and explicitly on the command line. */
+#if 0
+    LOUD(fprintf(stderr, "grokdir -> grokfile '%s'\n", dir));
     newfile = grokfile(dir, filelistp);
     if (newfile == NULL) {
       LOUD(fprintf(stderr, "grokfile rejected '%s'\n", dir));
@@ -845,7 +856,20 @@ static void grokdir(const char * const restrict dir,
     }
     single = 1;
     goto add_single_file;
+#endif
+    fprintf(stderr, "\nFile specs on command line disabled in this version for safety\n");
+    fprintf(stderr, "This should be restored (and safe) in future release v1.16.0\n");
+    fprintf(stderr, "See https://github.com/jbruchon/jdupes or email jody@jodybruchon.com\n");
+    return; /* Remove when single file is restored */
   }
+
+  /* Double traversal prevention tree */
+  i = traverse_check(device, inode);
+  if (i == 1) return;
+  if (i == 2) goto error_travdone;
+
+  item_progress++;
+  grokdir_level++;
 
 #ifdef UNICODE
   /* Windows requires \* at the end of directory names */
@@ -1228,7 +1252,7 @@ static file_t **checkmatch(filetree_t * restrict tree, file_t * const restrict f
       printf("Partial hashes match:\n   %s\n   %s\n\n", file->d_name, tree->file->d_name);
 
     if (file->size <= PARTIAL_HASH_SIZE || ISFLAG(flags, F_PARTIALONLY)) {
-      if (ISFLAG(flags, F_PARTIALONLY)) LOUD(fprintf(stderr, "checkmatch: partial only mode: treating partial hash as full hash\n"));
+      if (ISFLAG(flags, F_PARTIALONLY)) { LOUD(fprintf(stderr, "checkmatch: partial only mode: treating partial hash as full hash\n")); }
       else { LOUD(fprintf(stderr, "checkmatch: small file: copying partial hash to full hash\n")); }
       /* filehash_partial = filehash if file is small enough */
       if (!ISFLAG(file->flags, F_HASH_FULL)) {
