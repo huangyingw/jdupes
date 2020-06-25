@@ -15,7 +15,7 @@ Please consider financially supporting continued developemnt of jdupes:
 https://www.subscribestar.com/JodyBruchon
 
 
-v1.15.x specific: Why is the addition of single files not working?
+v1.15+ specific: Why is the addition of single files not working?
 --------------------------------------------------------------------------
 If a file was added through recursion and also added explicitly, that file
 would end up matching itself. This issue can be seen in v1.14.1 or older
@@ -42,7 +42,7 @@ such, the best option was to shove out a new minor release with this
 feature turned off until some additional checking can be done, e.g. by
 making sure the canonical paths aren't identical between any two files.
 
-v1.16.0 will be released with a safe fix for this.
+A future release will fix this safely.
 
 
 Why use jdupes instead of the original fdupes or other duplicate finders?
@@ -177,6 +177,7 @@ option is specified (delete, summarize, link, dedupe, etc.)
  -T --partial-only      match based on partial hashes only. WARNING:
                         EXTREMELY DANGEROUS paired with destructive actions!
                         -T must be specified twice to work. Read the manual!
+ -u --printunique       print only a list of unique (non-matched) files
  -v --version           display jdupes version and license information
  -x --xsize=SIZE        exclude files of size < SIZE bytes from consideration
     --xsize=+SIZE       '+' specified before SIZE, exclude size > SIZE

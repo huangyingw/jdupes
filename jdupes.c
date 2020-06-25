@@ -931,7 +931,7 @@ static void grokdir(const char * const restrict dir,
     goto add_single_file;
 #endif
     fprintf(stderr, "\nFile specs on command line disabled in this version for safety\n");
-    fprintf(stderr, "This should be restored (and safe) in future release v1.16.0\n");
+    fprintf(stderr, "This should be restored (and safe) in a future release\n");
     fprintf(stderr, "See https://github.com/jbruchon/jdupes or email jody@jodybruchon.com\n");
     return; /* Remove when single file is restored */
   }
@@ -1662,6 +1662,7 @@ static inline void help_text(void)
   printf(" -T --partial-only \tmatch based on partial hashes only. WARNING:\n");
   printf("                  \tEXTREMELY DANGEROUS paired with destructive actions!\n");
   printf("                  \t-T must be specified twice to work. Read the manual!\n");
+  printf(" -u --printunique \tprint only a list of unique (non-matched) files\n");
   printf(" -v --version     \tdisplay jdupes version and license information\n");
   printf(" -x --xsize=SIZE  \texclude files of size < SIZE bytes from consideration\n");
   printf("    --xsize=+SIZE \t'+' specified before SIZE, exclude size > SIZE\n");
