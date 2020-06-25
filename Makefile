@@ -188,6 +188,7 @@ clean:
 
 distclean: clean
 	$(RM) *.pkg.tar.xz
+	$(RM) -r jdupes-*-win*/ jdupes-*-win*.zip
 
 package:
 	+./chroot_build.sh
