@@ -28,7 +28,7 @@ instead of using CFLAGS_EXTRA, i.e. 'make DEBUG=1':
 
 DEBUG                  Turn on algorithm statistic reporting with '-D'
 LOUD                   '-@' for low-level debugging; enables DEBUG
-ENABLE_DEDUPE          Enable '-B/--dedupe' for filesystem deduplication
+ENABLE_DEDUPE          Enable '-B/--dedupe' deduplication features
 STATIC_DEDUPE_H        Build dedupe support with included minimal header file
 LOW_MEMORY             Build for lower memory usage instead of speed
 NO_PERMS               Disable permission options and code
@@ -82,3 +82,9 @@ and you understand that this is NOT SUPPORTED and YOU'RE 100% ON YOUR OWN,
 you can compile it with this make command and it'll even partially work:
 
 make standalone NO_UNICODE=1 CFLAGS_EXTRA='-DNO_PERMS -DNO_SYMLINKS -DNO_HARDLINKS'
+
+There are some crude "package" generators included as make targets:
+
+package     Uses chroots under /chroot to build Linux packages
+winpackage  Makes Windows MinGW 32-bit and 64-bit packages (zip)
+macpackage  Makes macOS 64-bit packages (zip)
