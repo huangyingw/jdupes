@@ -1,8 +1,8 @@
 diff --git a/.gitignore b/.gitignore
-index 2d74e2a..b002135 100644
+index dc8c988..f272028 100644
 --- ./.gitignore
 +++ ./.gitignore
-@@ -47,3 +47,4 @@ core
+@@ -48,3 +48,4 @@ core
  
  # Mac OS
  .DS_Store
