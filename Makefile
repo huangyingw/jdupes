@@ -12,7 +12,7 @@ PREFIX = /usr/local
 # To disable long options, uncomment the following line.
 #CFLAGS += -DOMIT_GETOPT_LONG
 
-# Uncomment for Linux for -B/--dedupe.
+# Uncomment for -B/--dedupe.
 # This can also be enabled at build time: 'make ENABLE_DEDUPE=1'
 #CFLAGS += -DENABLE_DEDUPE
 
@@ -145,6 +145,13 @@ OBJS_CLEAN += jdupes-standalone
 
 all: $(PROGRAM_NAME)
 
+static: $(PROGRAM_NAME)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $(PROGRAM_NAME) $(OBJS) -static
+
+static_stripped: $(PROGRAM_NAME)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $(PROGRAM_NAME) $(OBJS) -static
+	strip $(PROGRAM_NAME)
+
 $(PROGRAM_NAME): $(OBJS)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $(PROGRAM_NAME) $(OBJS)
 
@@ -181,6 +188,12 @@ clean:
 
 distclean: clean
 	$(RM) *.pkg.tar.xz
+	$(RM) -r jdupes-*-win*/ jdupes-*-win*.zip
+	$(RM) -r jdupes-*-mac*/ jdupes-*-mac*.zip
 
 package:
 	+./chroot_build.sh
+winpackage:
+	+./generate_windows_packages.sh
+macpackage:
+	+./generate_mac_packages.sh

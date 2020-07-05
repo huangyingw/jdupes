@@ -35,7 +35,7 @@ static inline uint32_t decode_utf8(const char * restrict * const string) {
 
   /** ASCII. */
   if (likely(!(**string & 0x80)))
-    return *(*string)++;
+    return (uint32_t)*(*string)++;
 
   /** Multibyte 2, 3, 4. */
   if ((**string & 0xe0) == 0xc0) {
@@ -78,7 +78,7 @@ static inline void escape_uni16(uint16_t u16, char ** const json) {
 static void json_escape(const char * restrict string, char * restrict const target)
 {
   uint32_t curr = 0;
-  char * escaped = target;
+  char *escaped = target;
   while (*string != '\0' && (escaped - target) < (PATH_MAX * 2 - 1)) {
     switch (*string) {
       case '\"':
@@ -91,13 +91,13 @@ static void json_escape(const char * restrict string, char * restrict const targ
 	if (curr == 0xffffffff) break;
 	if (likely(curr < 0xffff)) {
 	  if (likely(curr < 0x20) || curr > 0xff)
-	    escape_uni16(curr, &escaped);
+	    escape_uni16((uint16_t)curr, &escaped);
 	  else
-	    *escaped++ = curr;
+	    *escaped++ = (char)curr;
 	} else {
 	  curr -= 0x10000;
-	  escape_uni16(0xD800 + ((curr >> 10) & 0x03ff), &escaped);
-	  escape_uni16(0xDC00 + (curr & 0x03ff), &escaped);
+	  escape_uni16((uint16_t)(0xD800 + ((curr >> 10) & 0x03ff)), &escaped);
+	  escape_uni16((uint16_t)(0xDC00 + (curr & 0x03ff)), &escaped);
 	}
         break;
     }
@@ -114,7 +114,7 @@ extern void printjson(file_t * restrict files, const int argc, char **argv)
   char *temp2 = string_malloc(PATH_MAX * 2);
   char *temp_insert = temp;
 
-  LOUD(fprintf(stderr, "act_printjson: %p\n", files));
+  LOUD(fprintf(stderr, "printjson: %p\n", files));
 
   /* Output information about the jdupes command environment */
   printf("{\n  \"jdupesVersion\": \"%s\",\n  \"jdupesVersionDate\": \"%s\",\n", VER, VERDATE);
@@ -135,7 +135,7 @@ extern void printjson(file_t * restrict files, const int argc, char **argv)
 
   printf("  \"matchSets\": [\n");
   while (files != NULL) {
-    if (ISFLAG(files->flags, F_HAS_DUPES)) {
+    if (ISFLAG(files->flags, FF_HAS_DUPES)) {
       if (comma) printf(",\n");
       printf("    {\n      \"fileSize\": %" PRIdMAX ",\n      \"fileList\": [\n        { \"filePath\": \"", (intmax_t)files->size);
       sprintf(temp, "%s", files->d_name);

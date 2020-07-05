@@ -138,21 +138,22 @@ extern uint_fast32_t flags;
 #define F_NOCHANGECHECK		(1U << 26)
 #define F_PRINTJSON		(1U << 27)
 #define F_SKIPHASH		(1U << 28)
-
+#define F_PRINTUNIQUE		(1U << 29)
 #define F_LOUD			(1U << 30)
 #define F_DEBUG			(1U << 31)
 
 /* Per-file true/false flags */
-#define F_VALID_STAT		(1U << 0)
-#define F_HASH_PARTIAL		(1U << 1)
-#define F_HASH_FULL		(1U << 2)
-#define F_HAS_DUPES		(1U << 3)
-#define F_IS_SYMLINK		(1U << 4)
+#define FF_VALID_STAT		(1U << 0)
+#define FF_HASH_PARTIAL		(1U << 1)
+#define FF_HASH_FULL		(1U << 2)
+#define FF_HAS_DUPES		(1U << 3)
+#define FF_IS_SYMLINK		(1U << 4)
+#define FF_NOT_UNIQUE		(1U << 5)
 
 /* Extra print flags */
-#define P_PARTIAL		(1U << 0)
-#define P_EARLYMATCH		(1U << 1)
-#define P_FULLHASH		(1U << 2)
+#define PF_PARTIAL		(1U << 0)
+#define PF_EARLYMATCH		(1U << 1)
+#define PF_FULLHASH		(1U << 2)
 
 typedef enum {
   ORDER_NAME = 0,
@@ -227,20 +228,21 @@ struct extfilter {
 };
 
 /* Extended filter parameter flags */
-#define X_DIR			0x00000001U
-#define X_SIZE_EQ		0x00000002U
-#define X_SIZE_GT		0x00000004U
-#define X_SIZE_LT		0x00000008U
+#define XF_EXCL_EXT		0x00000001U
+#define XF_SIZE_EQ		0x00000002U
+#define XF_SIZE_GT		0x00000004U
+#define XF_SIZE_LT		0x00000008U
+#define XF_ONLY_EXT		0x00000010U
+#define XF_EXCL_STR		0x00000020U
+#define XF_ONLY_STR		0x00000040U
 /* The X-than-or-equal are combination flags */
-#define X_SIZE_GTEQ		0x00000006U
-#define X_SIZE_LTEQ		0x0000000aU
+#define XF_SIZE_GTEQ		0x00000006U
+#define XF_SIZE_LTEQ		0x0000000aU
 
-/* Size specifier flags */
-#define XX_EXCL_SIZE		0x0000000eU
-/* Flags that use numeric offset instead of a string */
-#define XX_EXCL_OFFSET		0x0000000eU
-/* Flags that require a data parameter */
-#define XX_EXCL_DATA		0x0000000fU
+/* Flags that use a numeric size with optional suffix */
+#define XF_REQ_NUMBER		0x0000000eU
+/* Flags that require a data parameter (after a colon) */
+#define XF_REQ_VALUE		0x0000001fU
 
 /* Exclude definition array */
 struct extfilter_tags {

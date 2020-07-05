@@ -46,6 +46,9 @@
 #include "jody_win_unicode.h"
 #include "jody_cacheinfo.h"
 #include "version.h"
+#ifdef ENABLE_DEDUPE
+#include <sys/utsname.h>
+#endif
 
 /* Headers for post-scanning actions */
 #include "act_deletefiles.h"
@@ -204,12 +207,15 @@ static struct travdone *travdone_head = NULL;
 /* Extended filter tree head and static tag list */
 struct extfilter *extfilter_head = NULL;
 const struct extfilter_tags extfilter_tags[] = {
-  { "dir",	X_DIR },
-  { "size+",	X_SIZE_GT },
-  { "size+=",	X_SIZE_GTEQ },
-  { "size-=",	X_SIZE_LTEQ },
-  { "size-",	X_SIZE_LT },
-  { "size=",	X_SIZE_EQ },
+  { "noext",	XF_EXCL_EXT },
+  { "onlyext",	XF_ONLY_EXT },
+  { "size+",	XF_SIZE_GT },
+  { "size-",	XF_SIZE_LT },
+  { "size+=",	XF_SIZE_GTEQ },
+  { "size-=",	XF_SIZE_LTEQ },
+  { "size=",	XF_SIZE_EQ },
+  { "nostr",	XF_EXCL_STR },
+  { "onlystr",	XF_ONLY_STR },
   { NULL, 0 },
 };
 
@@ -258,8 +264,12 @@ struct timeval time1, time2;
 /* For path name mangling */
 char tempname[PATHBUF_SIZE * 2];
 
-/***** End definitions, begin code *****/
+/* Compare two hashes like memcmp() */
+#define HASH_COMPARE(a,b) ((a > b) ? 1:((a == b) ? 0:-1))
 
+static void help_text_extfilter(void);
+
+/***** End definitions, begin code *****/
 
 /* Catch CTRL-C and either notify or terminate */
 void sighandler(const int signum)
@@ -273,6 +283,7 @@ void sighandler(const int signum)
   interrupt = 1;
   return;
 }
+
 
 #ifndef ON_WINDOWS
 void sigusr1(const int signum)
@@ -303,9 +314,6 @@ extern void nullptr(const char * restrict func)
   string_malloc_destroy();
   exit(EXIT_FAILURE);
 }
-
-/* Compare two hashes like memcmp() */
-#define HASH_COMPARE(a,b) ((a > b) ? 1:((a == b) ? 0:-1))
 
 
 static inline char **cloneargs(const int argc, char **argv)
@@ -385,6 +393,59 @@ static void update_progress(const char * const restrict msg, const int file_perc
   return;
 }
 
+
+/***** Add new functions here *****/
+
+
+/* Does a file have one of these comma-separated extensions?
+ * Returns 1 after any match, 0 if no matches */
+int match_extensions(char *path, const char *extlist)
+{
+  char *dot;
+  const char *ext;
+  size_t len;
+
+  LOUD(fprintf(stderr, "match_extensions('%s', '%s')\n", path, extlist);)
+  if (path == NULL || extlist == NULL) nullptr("match_extensions");
+
+  dot = NULL;
+  /* Scan to end of path, save the last dot, reset on path separators */
+  while (*path != '\0') {
+    if (*path == '.') dot = path;
+    if (*path == '/' || *path == '\\') dot = NULL;
+    path++;
+  }
+  /* No dots in the file name = no extension, so give up now */
+  if (dot == NULL) return 0;
+  dot++;
+  /* Handle a dot at the end of a file name */
+  if (*dot == '\0') return 0;
+
+  /* dot is now at the location of the last file extension; check the list */
+  while (*extlist == ',') extlist++;
+  ext = extlist;
+  len = 0;
+  while (1) {
+    if (*extlist == '\0' && len == 0) return 0;
+    if (*extlist == ',' || *extlist == '\0') {
+      while (*extlist == ',') extlist++;
+      if (extlist == ext)  goto skip_empty;
+      if (strncmp(dot, ext, len) == 0) {
+        LOUD(fprintf(stderr, "match_extensions: matched on extension '%s'\n", dot);)
+        return 1;
+      }
+skip_empty:
+      ext = extlist;
+      if (*extlist != '\0') extlist++;
+      len = 0;
+      continue;
+    }
+    extlist++; len++;
+  }
+  return 0;
+}
+
+
 /* Check file's stat() info to make sure nothing has changed
  * Returns 1 if changed, 0 if not changed, negative if error */
 extern int file_has_changed(file_t * const restrict file)
@@ -395,7 +456,7 @@ extern int file_has_changed(file_t * const restrict file)
   if (file == NULL || file->d_name == NULL) nullptr("file_has_changed()");
   LOUD(fprintf(stderr, "file_has_changed('%s')\n", file->d_name);)
 
-  if (!ISFLAG(file->flags, F_VALID_STAT)) return -66;
+  if (!ISFLAG(file->flags, FF_VALID_STAT)) return -66;
 
   if (STAT(file->d_name, &s) != 0) return -2;
   if (file->inode != s.st_ino) return 1;
@@ -409,7 +470,7 @@ extern int file_has_changed(file_t * const restrict file)
 #endif
 #ifndef NO_SYMLINKS
   if (lstat(file->d_name, &s) != 0) return -3;
-  if ((S_ISLNK(s.st_mode) > 0) ^ ISFLAG(file->flags, F_IS_SYMLINK)) return 1;
+  if ((S_ISLNK(s.st_mode) > 0) ^ ISFLAG(file->flags, FF_IS_SYMLINK)) return 1;
 #endif
 
   return 0;
@@ -422,8 +483,8 @@ extern inline int getfilestats(file_t * const restrict file)
   LOUD(fprintf(stderr, "getfilestats('%s')\n", file->d_name);)
 
   /* Don't stat the same file more than once */
-  if (ISFLAG(file->flags, F_VALID_STAT)) return 0;
-  SETFLAG(file->flags, F_VALID_STAT);
+  if (ISFLAG(file->flags, FF_VALID_STAT)) return 0;
+  SETFLAG(file->flags, FF_VALID_STAT);
 
   if (STAT(file->d_name, &s) != 0) return -1;
   file->inode = s.st_ino;
@@ -440,7 +501,7 @@ extern inline int getfilestats(file_t * const restrict file)
 #endif
 #ifndef NO_SYMLINKS
   if (lstat(file->d_name, &s) != 0) return -1;
-  if (S_ISLNK(s.st_mode) > 0) SETFLAG(file->flags, F_IS_SYMLINK);
+  if (S_ISLNK(s.st_mode) > 0) SETFLAG(file->flags, FF_IS_SYMLINK);
 #endif
   return 0;
 }
@@ -457,6 +518,9 @@ static void add_extfilter(const char *option)
 
   LOUD(fprintf(stderr, "add_extfilter '%s'\n", option);)
 
+  /* Invoke help text if requested */
+  if (strcasecmp(option, "help") == 0) { help_text_extfilter(); exit(EXIT_SUCCESS); }
+
   opt = string_malloc(strlen(option) + 1);
   if (opt == NULL) oom("add_extfilter option");
   strcpy(opt, option);
@@ -471,10 +535,10 @@ static void add_extfilter(const char *option)
   }
 
   while (tags->tag != NULL && strcmp(tags->tag, opt) != 0) tags++;
-  if (tags->tag == NULL) goto bad_tag;
+  if (tags->tag == NULL) goto error_bad_filter;
 
   /* Check for a tag that requires a value */
-  if (tags->flags & XX_EXCL_DATA && *p == '\0') goto spec_missing;
+  if (tags->flags & XF_REQ_VALUE && *p == '\0') goto error_value_missing;
 
   /* *p is now at the value, NOT the tag string! */
 
@@ -494,18 +558,18 @@ static void add_extfilter(const char *option)
   /* Set tag value from predefined tag array */
   extf->flags = tags->flags;
 
-  /* Initialize the new exclude element */
+  /* Initialize the new extfilter element */
   extf->next = NULL;
-  if (extf->flags & XX_EXCL_OFFSET) {
+  if (extf->flags & XF_REQ_NUMBER) {
     /* Exclude uses a number; handle it with possible suffixes */
     *(extf->param) = '\0';
     /* Get base size */
-    if (*p < '0' || *p > '9') goto bad_size_suffix;
+    if (*p < '0' || *p > '9') goto error_bad_size_suffix;
     extf->size = strtoll(p, &p, 10);
     /* Handle suffix, if any */
     if (*p != '\0') {
       while (ss->suffix != NULL && strcasecmp(ss->suffix, p) != 0) ss++;
-      if (ss->suffix == NULL) goto bad_size_suffix;
+      if (ss->suffix == NULL) goto error_bad_size_suffix;
       extf->size *= ss->multiplier;
     }
   } else {
@@ -519,14 +583,17 @@ static void add_extfilter(const char *option)
   string_free(opt);
   return;
 
-spec_missing:
-  fprintf(stderr, "extfilter spec missing or invalid: -X spec:data\n");
+error_value_missing:
+  fprintf(stderr, "extfilter value missing or invalid: -X filter:value\n");
+  help_text_extfilter();
   exit(EXIT_FAILURE);
-bad_tag:
-  fprintf(stderr, "Invalid extfilter tag was specified\n");
+error_bad_filter:
+  fprintf(stderr, "Invalid extfilter filter name was specified\n");
+  help_text_extfilter();
   exit(EXIT_FAILURE);
-bad_size_suffix:
-  fprintf(stderr, "Invalid -X size suffix specified; use B or KMGTPE[i][B]\n");
+error_bad_size_suffix:
+  fprintf(stderr, "Invalid extfilter size suffix specified; use B or KMGTPE[i][B]\n");
+  help_text_extfilter();
   exit(EXIT_FAILURE);
 }
 
@@ -658,17 +725,22 @@ static int check_singlefile(file_t * const restrict newfile)
     /* Exclude files based on exclusion stack size specs */
     excluded = 0;
     for (struct extfilter *extf = extfilter_head; extf != NULL; extf = extf->next) {
-      uint32_t sflag = extf->flags & XX_EXCL_SIZE;
+      uint32_t sflag = extf->flags;
+      LOUD(fprintf(stderr, "check_singlefile: extfilter check: %08x %ld %ld %s\n", sflag, newfile->size, extf->size, newfile->d_name);)
       if (
-           ((sflag == X_SIZE_EQ) && (newfile->size != extf->size)) ||
-           ((sflag == X_SIZE_LTEQ) && (newfile->size <= extf->size)) ||
-           ((sflag == X_SIZE_GTEQ) && (newfile->size >= extf->size)) ||
-           ((sflag == X_SIZE_GT) && (newfile->size > extf->size)) ||
-           ((sflag == X_SIZE_LT) && (newfile->size < extf->size))
+           ((sflag == XF_SIZE_EQ) && (newfile->size != extf->size)) ||
+           ((sflag == XF_SIZE_LTEQ) && (newfile->size <= extf->size)) ||
+           ((sflag == XF_SIZE_GTEQ) && (newfile->size >= extf->size)) ||
+           ((sflag == XF_SIZE_GT) && (newfile->size > extf->size)) ||
+           ((sflag == XF_SIZE_LT) && (newfile->size < extf->size)) ||
+           ((sflag == XF_EXCL_EXT) && match_extensions(newfile->d_name, extf->param)) ||
+           ((sflag == XF_ONLY_EXT) && !match_extensions(newfile->d_name, extf->param)) ||
+           ((sflag == XF_EXCL_STR) && strstr(newfile->d_name, extf->param)) ||
+           ((sflag == XF_ONLY_STR) && !strstr(newfile->d_name, extf->param))
       ) excluded = 1;
     }
     if (excluded) {
-      LOUD(fprintf(stderr, "check_singlefile: excluding based on xsize limit (-x set)\n"));
+      LOUD(fprintf(stderr, "check_singlefile: excluding based on an extfilter option\n"));
       return 1;
     }
   }
@@ -686,6 +758,7 @@ static int check_singlefile(file_t * const restrict newfile)
   }
  #endif /* NO_HARDLINKS */
 #endif /* ON_WINDOWS */
+  LOUD(fprintf(stderr, "check_singlefile: all checks passed\n"));
   return 0;
 }
 
@@ -714,7 +787,7 @@ static file_t *init_newfile(const size_t len, file_t * restrict * const restrict
 
 
 /* Create a new traversal check object and initialize its values */
-static struct travdone *travdone_alloc(const jdupes_ino_t inode, const dev_t device)
+static struct travdone *travdone_alloc(const dev_t device, const jdupes_ino_t inode)
 {
   struct travdone *trav;
 
@@ -745,6 +818,51 @@ static void travdone_free(struct travdone * const restrict cur)
 }
 
 
+/* Check to see if device:inode pair has already been traversed */
+static int traverse_check(const dev_t device, const jdupes_ino_t inode)
+{
+  struct travdone *traverse = travdone_head;
+
+  if (travdone_head == NULL) {
+    travdone_head = travdone_alloc(device, inode);
+    if (travdone_head == NULL) return 2;
+  } else {
+    traverse = travdone_head;
+    while (1) {
+      if (traverse == NULL) nullptr("traverse_check()");
+      /* Don't re-traverse directories we've already seen */
+      if (inode == traverse->inode && device == traverse->device) {
+        LOUD(fprintf(stderr, "traverse_check: already seen: %ld:%ld\n", device,inode);)
+        return 1;
+      } else if (inode > traverse->inode || (inode == traverse->inode && device > traverse->device)) {
+        /* Traverse right */
+        if (traverse->right == NULL) {
+          LOUD(fprintf(stderr, "traverse item right: %ld:%ld\n", device, inode);)
+          traverse->right = travdone_alloc(device, inode);
+          if (traverse->right == NULL) return 2;
+          break;
+        }
+        traverse = traverse->right;
+        continue;
+      } else {
+        /* Traverse left */
+        if (traverse->left == NULL) {
+          LOUD(fprintf(stderr, "traverse item left %ld,%ld\n", device, inode);)
+          traverse->left = travdone_alloc(device, inode);
+          if (traverse->left == NULL) return 2;
+          break;
+        }
+        traverse = traverse->left;
+        continue;
+      }
+    }
+  }
+  return 0;
+}
+
+
+/* This is disabled until a check is in place to make it safe */
+#if 0
 /* Add a single file to the file tree */
 static inline file_t *grokfile(const char * const restrict name, file_t * restrict * const restrict filelistp)
 {
@@ -767,6 +885,7 @@ static inline file_t *grokfile(const char * const restrict name, file_t * restri
   }
   return newfile;
 }
+#endif
 
 
 /* Load a directory's contents into the file tree, recursing as needed */
@@ -778,7 +897,6 @@ static void grokdir(const char * const restrict dir,
   struct dirent *dirinfo;
   static int grokdir_level = 0;
   size_t dirlen;
-  struct travdone *traverse;
   int i, single = 0;
   jdupes_ino_t inode;
   dev_t device, n_device;
@@ -794,50 +912,16 @@ static void grokdir(const char * const restrict dir,
   if (dir == NULL || filelistp == NULL) nullptr("grokdir()");
   LOUD(fprintf(stderr, "grokdir: scanning '%s' (order %d, recurse %d)\n", dir, user_item_count, recurse));
 
-  /* Double traversal prevention tree */
+  /* Get directory stats (or file stats if it's a file) */
   i = getdirstats(dir, &inode, &device, &mode);
   if (i < 0) goto error_travdone;
-
-  if (travdone_head == NULL) {
-    travdone_head = travdone_alloc(inode, device);
-    if (travdone_head == NULL) goto error_travdone;
-  } else {
-    traverse = travdone_head;
-    while (1) {
-      if (traverse == NULL) nullptr("grokdir() traverse");
-      /* Don't re-traverse directories we've already seen */
-      if (S_ISDIR(mode) && inode == traverse->inode && device == traverse->device) {
-        LOUD(fprintf(stderr, "already seen item '%s', skipping\n", dir);)
-        return;
-      } else if (inode > traverse->inode || (inode == traverse->inode && device > traverse->device)) {
-        /* Traverse right */
-        if (traverse->right == NULL) {
-          LOUD(fprintf(stderr, "traverse item right '%s'\n", dir);)
-          traverse->right = travdone_alloc(inode, device);
-          if (traverse->right == NULL) goto error_travdone;
-          break;
-        }
-        traverse = traverse->right;
-        continue;
-      } else {
-        /* Traverse left */
-        if (traverse->left == NULL) {
-          LOUD(fprintf(stderr, "traverse item left '%s'\n", dir);)
-          traverse->left = travdone_alloc(inode, device);
-          if (traverse->left == NULL) goto error_travdone;
-          break;
-        }
-        traverse = traverse->left;
-        continue;
-      }
-    }
-  }
-
-  item_progress++;
-  grokdir_level++;
-
   /* if dir is actually a file, just add it to the file tree */
   if (i == 1) {
+/* Single file addition is disabled for now because there is no safeguard
+ * against the file being compared against itself if it's added in both a
+ * recursion and explicitly on the command line. */
+#if 0
+    LOUD(fprintf(stderr, "grokdir -> grokfile '%s'\n", dir));
     newfile = grokfile(dir, filelistp);
     if (newfile == NULL) {
       LOUD(fprintf(stderr, "grokfile rejected '%s'\n", dir));
@@ -845,7 +929,20 @@ static void grokdir(const char * const restrict dir,
     }
     single = 1;
     goto add_single_file;
+#endif
+    fprintf(stderr, "\nFile specs on command line disabled in this version for safety\n");
+    fprintf(stderr, "This should be restored (and safe) in a future release\n");
+    fprintf(stderr, "See https://github.com/jbruchon/jdupes or email jody@jodybruchon.com\n");
+    return; /* Remove when single file is restored */
   }
+
+  /* Double traversal prevention tree */
+  i = traverse_check(device, inode);
+  if (i == 1) return;
+  if (i == 2) goto error_travdone;
+
+  item_progress++;
+  grokdir_level++;
 
 #ifdef UNICODE
   /* Windows requires \* at the end of directory names */
@@ -932,7 +1029,7 @@ static void grokdir(const char * const restrict dir,
           continue;
         }
 #ifndef NO_SYMLINKS
-        else if (ISFLAG(flags, F_FOLLOWLINKS) || !ISFLAG(newfile->flags, F_IS_SYMLINK)) {
+        else if (ISFLAG(flags, F_FOLLOWLINKS) || !ISFLAG(newfile->flags, FF_IS_SYMLINK)) {
           LOUD(fprintf(stderr, "grokdir: directory(symlink): recursing (-r/-R)\n"));
           grokdir(newfile->d_name, filelistp, recurse);
         }
@@ -947,10 +1044,10 @@ static void grokdir(const char * const restrict dir,
       string_free(newfile);
       continue;
     } else {
-add_single_file:
+//add_single_file:
       /* Add regular files to list, including symlink targets if requested */
 #ifndef NO_SYMLINKS
-      if (!ISFLAG(newfile->flags, F_IS_SYMLINK) || (ISFLAG(newfile->flags, F_IS_SYMLINK) && ISFLAG(flags, F_FOLLOWLINKS))) {
+      if (!ISFLAG(newfile->flags, FF_IS_SYMLINK) || (ISFLAG(newfile->flags, FF_IS_SYMLINK) && ISFLAG(flags, F_FOLLOWLINKS))) {
 #else
       if (S_ISREG(newfile->mode)) {
 #endif
@@ -1043,7 +1140,7 @@ static jdupes_hash_t *get_filehash(const file_t * const restrict checkfile,
    */
 
   *hash = 0;
-  if (ISFLAG(checkfile->flags, F_HASH_PARTIAL)) {
+  if (ISFLAG(checkfile->flags, FF_HASH_PARTIAL)) {
     *hash = checkfile->filehash_partial;
     /* Don't bother going further if max_read is already fulfilled */
     if (max_read != 0 && max_read <= PARTIAL_HASH_SIZE) {
@@ -1064,7 +1161,7 @@ static jdupes_hash_t *get_filehash(const file_t * const restrict checkfile,
   }
   /* Actually seek past the first chunk if applicable
    * This is part of the filehash_partial skip optimization */
-  if (ISFLAG(checkfile->flags, F_HASH_PARTIAL)) {
+  if (ISFLAG(checkfile->flags, FF_HASH_PARTIAL)) {
     if (fseeko(file, PARTIAL_HASH_SIZE, SEEK_SET) == -1) {
       fclose(file);
       fprintf(stderr, "\nerror seeking in file "); fwprint(stderr, checkfile->d_name, 1);
@@ -1196,26 +1293,26 @@ static file_t **checkmatch(filetree_t * restrict tree, file_t * const restrict f
   }
 
   /* Print pre-check (early) match candidates if requested */
-  if (ISFLAG(p_flags, P_EARLYMATCH)) printf("Early match check passed:\n   %s\n   %s\n\n", file->d_name, tree->file->d_name);
+  if (ISFLAG(p_flags, PF_EARLYMATCH)) printf("Early match check passed:\n   %s\n   %s\n\n", file->d_name, tree->file->d_name);
 
   /* If preliminary matching succeeded, do main file data checks */
   if (cmpresult == 0) {
     LOUD(fprintf(stderr, "checkmatch: starting file data comparisons\n"));
     /* Attempt to exclude files quickly with partial file hashing */
-    if (!ISFLAG(tree->file->flags, F_HASH_PARTIAL)) {
+    if (!ISFLAG(tree->file->flags, FF_HASH_PARTIAL)) {
       filehash = get_filehash(tree->file, PARTIAL_HASH_SIZE);
       if (filehash == NULL) return NULL;
 
       tree->file->filehash_partial = *filehash;
-      SETFLAG(tree->file->flags, F_HASH_PARTIAL);
+      SETFLAG(tree->file->flags, FF_HASH_PARTIAL);
     }
 
-    if (!ISFLAG(file->flags, F_HASH_PARTIAL)) {
+    if (!ISFLAG(file->flags, FF_HASH_PARTIAL)) {
       filehash = get_filehash(file, PARTIAL_HASH_SIZE);
       if (filehash == NULL) return NULL;
 
       file->filehash_partial = *filehash;
-      SETFLAG(file->flags, F_HASH_PARTIAL);
+      SETFLAG(file->flags, FF_HASH_PARTIAL);
     }
 
     cmpresult = HASH_COMPARE(file->filehash_partial, tree->file->filehash_partial);
@@ -1224,43 +1321,43 @@ static file_t **checkmatch(filetree_t * restrict tree, file_t * const restrict f
     DBG(partial_hash++;)
 
     /* Print partial hash matching pairs if requested */
-    if (cmpresult == 0 && ISFLAG(p_flags, P_PARTIAL))
+    if (cmpresult == 0 && ISFLAG(p_flags, PF_PARTIAL))
       printf("Partial hashes match:\n   %s\n   %s\n\n", file->d_name, tree->file->d_name);
 
     if (file->size <= PARTIAL_HASH_SIZE || ISFLAG(flags, F_PARTIALONLY)) {
-      if (ISFLAG(flags, F_PARTIALONLY)) LOUD(fprintf(stderr, "checkmatch: partial only mode: treating partial hash as full hash\n"));
+      if (ISFLAG(flags, F_PARTIALONLY)) { LOUD(fprintf(stderr, "checkmatch: partial only mode: treating partial hash as full hash\n")); }
       else { LOUD(fprintf(stderr, "checkmatch: small file: copying partial hash to full hash\n")); }
       /* filehash_partial = filehash if file is small enough */
-      if (!ISFLAG(file->flags, F_HASH_FULL)) {
+      if (!ISFLAG(file->flags, FF_HASH_FULL)) {
         file->filehash = file->filehash_partial;
-        SETFLAG(file->flags, F_HASH_FULL);
+        SETFLAG(file->flags, FF_HASH_FULL);
         DBG(small_file++;)
       }
-      if (!ISFLAG(tree->file->flags, F_HASH_FULL)) {
+      if (!ISFLAG(tree->file->flags, FF_HASH_FULL)) {
         tree->file->filehash = tree->file->filehash_partial;
-        SETFLAG(tree->file->flags, F_HASH_FULL);
+        SETFLAG(tree->file->flags, FF_HASH_FULL);
         DBG(small_file++;)
       }
     } else if (cmpresult == 0) {
       if (ISFLAG(flags, F_SKIPHASH)) {
-	/* Skip full file hashing if requested by the user */
+        /* Skip full file hashing if requested by the user */
         LOUD(fprintf(stderr, "checkmatch: skipping full file hashes (F_SKIPMATCH)\n"));
       } else {
         /* If partial match was correct, perform a full file hash match */
-        if (!ISFLAG(tree->file->flags, F_HASH_FULL)) {
+        if (!ISFLAG(tree->file->flags, FF_HASH_FULL)) {
           filehash = get_filehash(tree->file, 0);
           if (filehash == NULL) return NULL;
 
           tree->file->filehash = *filehash;
-          SETFLAG(tree->file->flags, F_HASH_FULL);
+          SETFLAG(tree->file->flags, FF_HASH_FULL);
         }
 
-        if (!ISFLAG(file->flags, F_HASH_FULL)) {
+        if (!ISFLAG(file->flags, FF_HASH_FULL)) {
           filehash = get_filehash(file, 0);
           if (filehash == NULL) return NULL;
 
           file->filehash = *filehash;
-          SETFLAG(file->flags, F_HASH_FULL);
+          SETFLAG(file->flags, FF_HASH_FULL);
         }
 
         /* Full file hash comparison */
@@ -1319,7 +1416,7 @@ static file_t **checkmatch(filetree_t * restrict tree, file_t * const restrict f
     DBG(partial_to_full++;)
     TREE_DEPTH_UPDATE_MAX();
     LOUD(fprintf(stderr, "checkmatch: files appear to match based on hashes\n"));
-    if (ISFLAG(p_flags, P_FULLHASH)) printf("Full hashes match:\n   %s\n   %s\n\n", file->d_name, tree->file->d_name);
+    if (ISFLAG(p_flags, PF_FULLHASH)) printf("Full hashes match:\n   %s\n   %s\n\n", file->d_name, tree->file->d_name);
     return &tree->file;
   }
   /* Fall through - should never be reached */
@@ -1387,7 +1484,7 @@ extern unsigned int get_max_dupes(const file_t *files, unsigned int * const rest
 
   while (files) {
     unsigned int n_dupes;
-    if (ISFLAG(files->flags, F_HAS_DUPES)) {
+    if (ISFLAG(files->flags, FF_HAS_DUPES)) {
       groups++;
       if (n_files && files->size) (*n_files)++;
       n_dupes = 1;
@@ -1451,7 +1548,7 @@ static void registerpair(file_t **matchlist, file_t *newmatch,
   if (matchlist == NULL || newmatch == NULL || comparef == NULL) nullptr("registerpair()");
   LOUD(fprintf(stderr, "registerpair: '%s', '%s'\n", (*matchlist)->d_name, newmatch->d_name);)
 
-  SETFLAG((*matchlist)->flags, F_HAS_DUPES);
+  SETFLAG((*matchlist)->flags, FF_HAS_DUPES);
   back = NULL;
   traverse = *matchlist;
 
@@ -1465,15 +1562,15 @@ static void registerpair(file_t **matchlist, file_t *newmatch,
 
       if (!back) {
         *matchlist = newmatch; /* update pointer to head of list */
-        SETFLAG(newmatch->flags, F_HAS_DUPES);
-        CLEARFLAG(traverse->flags, F_HAS_DUPES); /* flag is only for first file in dupe chain */
+        SETFLAG(newmatch->flags, FF_HAS_DUPES);
+        CLEARFLAG(traverse->flags, FF_HAS_DUPES); /* flag is only for first file in dupe chain */
       } else back->duplicates = newmatch;
 
       break;
     } else {
       if (traverse->duplicates == 0) {
         traverse->duplicates = newmatch;
-        if (!back) SETFLAG(traverse->flags, F_HAS_DUPES);
+        if (!back) SETFLAG(traverse->flags, FF_HAS_DUPES);
 
         break;
       }
@@ -1499,7 +1596,7 @@ static inline void help_text(void)
   printf(" -1 --one-file-system \tdo not match files on different filesystems/devices\n");
   printf(" -A --nohidden    \texclude hidden files from consideration\n");
 #ifdef ENABLE_DEDUPE
-  printf(" -B --dedupe      \tsend matches to filesystem for block-level deduplication\n");
+  printf(" -B --dedupe      \tdo a copy-on-write (reflink/clone) deduplication\n");
 #endif
   printf(" -C --chunksize=# \toverride I/O chunk size (min %d, max %d)\n", MIN_CHUNK_SIZE, MAX_CHUNK_SIZE);
   printf(" -d --delete      \tprompt user for files to preserve and delete all\n");
@@ -1523,13 +1620,16 @@ static inline void help_text(void)
 #endif
   printf(" -j --json        \tproduce JSON (machine-readable) output\n");
   printf(" -K --skiphash    \tskip full file hashing (may be faster; 100%% safe)\n");
+  printf("                  \tWARNING: in development, not fully working yet!\n");
 #ifndef NO_SYMLINKS
   printf(" -l --linksoft    \tmake relative symlinks for duplicates w/o prompting\n");
 #endif
 #ifndef NO_HARDLINKS
   printf(" -L --linkhard    \thard link all duplicate files without prompting\n");
  #ifdef ON_WINDOWS
-  printf("                  \tWindows allows a maximum of 1023 hard links per file\n");
+  printf("                  \tWindows allows a maximum of 1023 hard links per file;\n");
+  printf("                  \tlinking large match sets will result in multiple sets\n");
+  printf("                  \tof hard linked files due to this limit.\n");
  #endif /* ON_WINDOWS */
 #endif /* NO_HARDLINKS */
   printf(" -m --summarize   \tsummarize dupe information\n");
@@ -1538,9 +1638,9 @@ static inline void help_text(void)
   printf("                  \teach set of duplicates and delete the rest without\n");
   printf("                  \tprompting the user\n");
   printf(" -o --order=BY    \tselect sort order for output, linking and deleting; by\n");
-#ifndef NO_USER_ORDER
-  printf(" -O --paramorder  \tParameter order is more important than selected -O sort\n");
   printf("                  \tmtime (BY=time) or filename (BY=name, the default)\n");
+#ifndef NO_USER_ORDER
+  printf(" -O --paramorder  \tParameter order is more important than selected -o sort\n");
 #endif
 #ifndef NO_PERMS
   printf(" -p --permissions \tdon't consider files with different owner/group or\n");
@@ -1562,21 +1662,45 @@ static inline void help_text(void)
   printf(" -T --partial-only \tmatch based on partial hashes only. WARNING:\n");
   printf("                  \tEXTREMELY DANGEROUS paired with destructive actions!\n");
   printf("                  \t-T must be specified twice to work. Read the manual!\n");
+  printf(" -u --printunique \tprint only a list of unique (non-matched) files\n");
   printf(" -v --version     \tdisplay jdupes version and license information\n");
   printf(" -x --xsize=SIZE  \texclude files of size < SIZE bytes from consideration\n");
   printf("    --xsize=+SIZE \t'+' specified before SIZE, exclude size > SIZE\n");
-  printf(" -X --extfilter=spec:x\tfilter files based on specified criteria\n");
-  printf("                  \tspecs: size+-=\n");
-  printf("                  \tFilters are cumulative: -X spec:ab -X spec:cd\n");
+  printf(" -X --extfilter=x:y\tfilter files based on specified criteria\n");
+  printf("                  \tUse '-X help' for detailed extfilter help\n");
   printf(" -z --zeromatch   \tconsider zero-length files to be duplicates\n");
   printf(" -Z --softabort   \tIf the user aborts (i.e. CTRL-C) act on matches so far\n");
 #ifndef ON_WINDOWS
   printf("                  \tYou can send SIGUSR1 to the program to toggle this\n");
 #endif
-  printf("\nFor sizes, K/M/G/T/P/E[B|iB] suffixes can be used (case-insensitive)\n");
 #ifdef OMIT_GETOPT_LONG
   printf("Note: Long options are not supported in this build.\n\n");
 #endif
+}
+
+
+static void help_text_extfilter(void)
+{
+  printf("Detailed help for jdupes -X/--extfilter options\n");
+  printf("General format: jdupes -X filter[:value][size_suffix]\n\n");
+  printf("noext:ext1[,ext2,...]   \tExclude files with certain extension(s)\n\n");
+  printf("onlyext:ext1[,ext2,...] \tOnly include files with certain extension(s)\n\n");
+  printf("size[+-=]:size[suffix]  \tExclude files meeting certain size criteria\n");
+  printf("                        \tSize specs: + larger, - smaller, = equal to\n");
+  printf("                        \tSpecs can be mixed, i.e. size+=:100k will\n");
+  printf("                        \texclude files 100KiB or larger in size.\n\n");
+  printf("nostr:text_string       \tExclude all paths containing the string\n");
+  printf("onlystr:text_string     \tOnly allow paths containing the string\n");
+  printf("                        \tHINT: you can use these for directories:\n");
+  printf("                        \t-X nostr:/dir_x/  or  -X onlystr:/dir_x/\n");
+//  printf("\t\n");
+  printf("\nSome filters take no value or multiple values. Filters that can take\n");
+  printf("a numeric option generally support the size multipliers K/M/G/T/P/E\n");
+  printf("with or without an added iB or B. Multipliers are binary-style unless\n");
+  printf("the B is used, which will use decimal multipliers. For example,\n");
+  printf("10k or 10kib = 10240; 10kb = 10000. Multipliers are case-insensitive.\n\n");
+  printf("Filters have cumulative effects: jdupes -X size+:100 -X size-:100 will\n");
+  printf("cause only files of exactly 100 bytes in size to be included.\n");
 }
 
 
@@ -1598,6 +1722,9 @@ int main(int argc, char **argv)
   static long manual_chunk_size = 0;
 #ifndef ON_WINDOWS
   static struct proc_cacheinfo pci;
+#endif
+#ifdef ENABLE_DEDUPE
+  static struct utsname utsname;
 #endif
 
 #ifndef OMIT_GETOPT_LONG
@@ -1638,6 +1765,7 @@ int main(int argc, char **argv)
     { "size", 0, 0, 'S' },
     { "nochangecheck", 0, 0, 't' },
     { "partial-only", 0, 0, 'T' },
+    { "printunique", 0, 0, 'u' },
     { "version", 0, 0, 'v' },
     { "xsize", 1, 0, 'x' },
     { "exclude", 1, 0, 'X' },
@@ -1660,7 +1788,7 @@ int main(int argc, char **argv)
 #ifdef UNICODE
   /* Create a UTF-8 **argv from the wide version */
   static char **argv;
-  argv = (char **)string_malloc(sizeof(char *) * argc);
+  argv = (char **)string_malloc(sizeof(char *) * (size_t)argc);
   if (!argv) oom("main() unicode argv");
   widearg_to_argv(argc, wargv, argv);
   /* fix up __argv so getopt etc. don't crash */
@@ -1696,7 +1824,7 @@ int main(int argc, char **argv)
   oldargv = cloneargs(argc, argv);
 
   while ((opt = GETOPT(argc, argv,
-  "@01ABC:dDfhHiIjKlLmMnNOpP:qQrRsStTvVzZo:x:X:"
+  "@01ABC:DdfHhIijKlLmMnNOPp:QqRrSsTtuVvZzo:x:X:"
 #ifndef OMIT_GETOPT_LONG
           , long_options, NULL
 #endif
@@ -1783,9 +1911,9 @@ int main(int argc, char **argv)
       SETFLAG(flags, F_PERMISSIONS);
       break;
     case 'P':
-      if (strcmp(optarg, "partial") == 0) SETFLAG(p_flags, P_PARTIAL);
-      else if (strcmp(optarg, "early") == 0) SETFLAG(p_flags, P_EARLYMATCH);
-      else if (strcmp(optarg, "fullhash") == 0) SETFLAG(p_flags, P_FULLHASH);
+      if (strcmp(optarg, "partial") == 0) SETFLAG(p_flags, PF_PARTIAL);
+      else if (strcmp(optarg, "early") == 0) SETFLAG(p_flags, PF_EARLYMATCH);
+      else if (strcmp(optarg, "fullhash") == 0) SETFLAG(p_flags, PF_FULLHASH);
       else {
         fprintf(stderr, "Option '%s' is not valid for -P\n", optarg);
         exit(EXIT_FAILURE);
@@ -1814,6 +1942,9 @@ int main(int argc, char **argv)
         SETFLAG(flags, F_PARTIALONLY);
       }
       break;
+    case 'u':
+      SETFLAG(flags, F_PRINTUNIQUE);
+      break;
 #ifndef NO_SYMLINKS
     case 'l':
       SETFLAG(flags, F_MAKESYMLINKS);
@@ -1824,12 +1955,6 @@ int main(int argc, char **argv)
 #endif
     case 'S':
       SETFLAG(flags, F_SHOWSIZE);
-      break;
-    case 'z':
-      SETFLAG(flags, F_INCLUDEEMPTY);
-      break;
-    case 'Z':
-      SETFLAG(flags, F_SOFTABORT);
       break;
     case 'x':
       fprintf(stderr, "-x/--xsize is deprecated; use -X size[+-=]:size[suffix] instead\n");
@@ -1848,6 +1973,12 @@ int main(int argc, char **argv)
       break;
     case 'X':
       add_extfilter(optarg);
+      break;
+    case 'z':
+      SETFLAG(flags, F_INCLUDEEMPTY);
+      break;
+    case 'Z':
+      SETFLAG(flags, F_SOFTABORT);
       break;
     case '@':
 #ifdef LOUD_DEBUG
@@ -1882,26 +2013,28 @@ int main(int argc, char **argv)
         }
       } else printf(" none");
       printf("\nCopyright (C) 2015-2020 by Jody Bruchon and contributors\n");
-      printf("Forked from fdupes 1.51, (C) 1999-2014 Adrian Lopez and contributors\n");
-      printf("\nPermission is hereby granted, free of charge, to any person\n");
-      printf("obtaining a copy of this software and associated documentation files\n");
-      printf("(the \"Software\"), to deal in the Software without restriction,\n");
-      printf("including without limitation the rights to use, copy, modify, merge,\n");
-      printf("publish, distribute, sublicense, and/or sell copies of the Software,\n");
-      printf("and to permit persons to whom the Software is furnished to do so,\n");
-      printf("subject to the following conditions:\n\n");
-      printf("The above copyright notice and this permission notice shall be\n");
-      printf("included in all copies or substantial portions of the Software.\n\n");
-      printf("THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS\n");
-      printf("OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF\n");
-      printf("MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.\n");
-      printf("IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY\n");
-      printf("CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,\n");
-      printf("TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE\n");
-      printf("SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.\n");
-      printf("\nIf you find this software useful, please consider financially\n");
-      printf("supporting its continued developemnt by visiting this URL:\n");
-      printf("      https://www.subscribestar.com/JodyBruchon\n");
+      printf("Forked from fdupes 1.51, (C) 1999-2014 Adrian Lopez and contributors\n\n");
+      printf("Permission is hereby granted, free of charge, to any person obtaining a copy of\n");
+      printf("this software and associated documentation files (the \"Software\"), to deal in\n");
+      printf("the Software without restriction, including without limitation the rights to\n");
+      printf("use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies\n");
+      printf("of the Software, and to permit persons to whom the Software is furnished to do\n");
+      printf("so, subject to the following conditions:\n\n");
+
+      printf("The above copyright notice and this permission notice shall be included in all\n");
+      printf("copies or substantial portions of the Software.\n\n");
+      printf("THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\n");
+      printf("IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\n");
+      printf("FITNESS FOR A PARTICULAR PURPOSE, AND NONINFRINGEMENT. IN NO EVENT SHALL THE\n");
+      printf("AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER\n");
+      printf("LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,\n");
+      printf("OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE\n");
+      printf("SOFTWARE.\n");
+      printf("\nIf you find this software useful, please consider financially supporting\n");
+      printf("its continued developemnt by donating to the author's SubscribeStar:\n");
+      printf("          https://SubscribeStar.com/JodyBruchon\n");
+      printf("\nNew releases, bug fixes, and more at the jdupes GitHub project page:\n");
+      printf("             https://github.com/jbruchon/jdupes\n");
       exit(EXIT_SUCCESS);
     case 'o':
       if (!strncasecmp("name", optarg, 5)) {
@@ -1915,6 +2048,16 @@ int main(int argc, char **argv)
       break;
     case 'B':
 #ifdef ENABLE_DEDUPE
+      /* Refuse to dedupe on 2.x kernels; they could damage user data */
+      if (uname(&utsname)) {
+        fprintf(stderr, "Failed to get kernel version! Aborting.\n");
+        exit(EXIT_FAILURE);
+      }
+      LOUD(fprintf(stderr, "dedupefiles: uname got release '%s'\n", utsname.release));
+      if (*(utsname.release) == '2' && *(utsname.release + 1) == '.') {
+        fprintf(stderr, "Refusing to dedupe on a 2.x kernel; data loss could occur. Aborting.\n");
+        exit(EXIT_FAILURE);
+      }
       SETFLAG(flags, F_DEDUPEFILES);
       /* btrfs will do the byte-for-byte check itself */
       SETFLAG(flags, F_QUICKCOMPARE);
@@ -1975,6 +2118,7 @@ int main(int argc, char **argv)
       !!ISFLAG(flags, F_HARDLINKFILES) +
       !!ISFLAG(flags, F_MAKESYMLINKS) +
       !!ISFLAG(flags, F_PRINTJSON) +
+      !!ISFLAG(flags, F_PRINTUNIQUE) +
       !!ISFLAG(flags, F_DEDUPEFILES);
 
   if (pm > 1) {
@@ -2136,6 +2280,7 @@ skip_file_scan:
   if (ISFLAG(flags, F_DEDUPEFILES)) dedupefiles(files);
 #endif /* ENABLE_DEDUPE */
   if (ISFLAG(flags, F_PRINTMATCHES)) printmatches(files);
+  if (ISFLAG(flags, F_PRINTUNIQUE)) printunique(files);
   if (ISFLAG(flags, F_PRINTJSON)) printjson(files, argc, argv);
   if (ISFLAG(flags, F_SUMMARIZEMATCHES)) {
     if (ISFLAG(flags, F_PRINTMATCHES)) printf("\n\n");

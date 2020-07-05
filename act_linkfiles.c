@@ -20,7 +20,20 @@
  wpath_t wname, wname2;
 #endif
 
-extern void linkfiles(file_t *files, const int hard)
+/* Apple clonefile() is basically a hard link */
+#ifdef ENABLE_DEDUPE
+ #ifdef __APPLE__
+  #ifdef NO_HARDLINKS
+   #error Hard link support is required for dedupe on macOS
+  #endif
+  #include <sys/attr.h>
+  #include <sys/clonefile.h>
+  #define ENABLE_CLONEFILE_LINK 1
+ #endif /* __APPLE__ */
+#endif /* ENABLE_DEDUPE */
+
+/* linktype: 0=symlink, 1=hardlink, 2=clonefile() */
+extern void linkfiles(file_t *files, const int linktype)
 {
   static file_t *tmpfile;
   static file_t *srcfile;
@@ -36,11 +49,11 @@ extern void linkfiles(file_t *files, const int hard)
   static char rel_path[PATHBUF_SIZE];
 #endif
 
-  LOUD(fprintf(stderr, "Running linkfiles(%d)\n", hard);)
+  LOUD(fprintf(stderr, "linkfiles(%d): %p\n", linktype, files);)
   curfile = files;
 
   while (curfile) {
-    if (ISFLAG(curfile->flags, F_HAS_DUPES)) {
+    if (ISFLAG(curfile->flags, FF_HAS_DUPES)) {
       counter = 1;
       tmpfile = curfile->duplicates;
       while (tmpfile) {
@@ -61,7 +74,7 @@ extern void linkfiles(file_t *files, const int hard)
   if (!dupelist) oom("linkfiles() dupelist");
 
   while (files) {
-    if (ISFLAG(files->flags, F_HAS_DUPES)) {
+    if (ISFLAG(files->flags, FF_HAS_DUPES)) {
       counter = 1;
       dupelist[counter] = files;
 
@@ -75,7 +88,7 @@ extern void linkfiles(file_t *files, const int hard)
 
       /* Link every file to the first file */
 
-      if (hard) {
+      if (linktype) {
 #ifndef NO_HARDLINKS
         x = 2;
         srcfile = dupelist[1];
@@ -89,7 +102,7 @@ extern void linkfiles(file_t *files, const int hard)
         /* Symlinks should target a normal file if one exists */
         srcfile = NULL;
         for (symsrc = 1; symsrc <= counter; symsrc++) {
-          if (!ISFLAG(dupelist[symsrc]->flags, F_IS_SYMLINK)) {
+          if (!ISFLAG(dupelist[symsrc]->flags, FF_IS_SYMLINK)) {
             srcfile = dupelist[symsrc];
             break;
           }
@@ -105,7 +118,7 @@ extern void linkfiles(file_t *files, const int hard)
         printf("[SRC] "); fwprint(stdout, srcfile->d_name, 1);
       }
       for (; x <= counter; x++) {
-        if (hard == 1) {
+        if (linktype == 1 || linktype == 2) {
           /* Can't hard link files on different devices */
           if (srcfile->device != dupelist[x]->device) {
             fprintf(stderr, "warning: hard link target on different device, not linking:\n-//-> ");
@@ -127,8 +140,8 @@ extern void linkfiles(file_t *files, const int hard)
           /* Symlink prerequisite check code can go here */
           /* Do not attempt to symlink a file to itself or to another symlink */
 #ifndef NO_SYMLINKS
-          if (ISFLAG(dupelist[x]->flags, F_IS_SYMLINK) &&
-              ISFLAG(dupelist[symsrc]->flags, F_IS_SYMLINK)) continue;
+          if (ISFLAG(dupelist[x]->flags, FF_IS_SYMLINK) &&
+              ISFLAG(dupelist[symsrc]->flags, FF_IS_SYMLINK)) continue;
           if (x == symsrc) continue;
 #endif
         }
@@ -228,13 +241,16 @@ extern void linkfiles(file_t *files, const int hard)
  #else
         if (CreateHardLink(dupelist[x]->d_name, srcfile->d_name, NULL) == TRUE) success = 1;
  #endif
-#else
-        if (hard) {
+#else /* ON_WINDOWS */
+        if (linktype == 1) {
           if (link(srcfile->d_name, dupelist[x]->d_name) == 0) success = 1;
- #ifdef NO_SYMLINKS
+#ifdef ENABLE_CLONEFILE_LINK
+        } else if (linktype == 2) {
+          if (clonefile(srcfile->d_name, dupelist[x]->d_name, 0) == 0) success = 1;
+#endif /* ENABLE_CLONEFILE_LINK */
         }
- #else
-        } else {
+ #ifndef NO_SYMLINKS
+        else {
           i = make_relative_link_name(srcfile->d_name, dupelist[x]->d_name, rel_path);
           LOUD(fprintf(stderr, "symlink GRN: %s to %s = %s\n", srcfile->d_name, dupelist[x]->d_name, rel_path));
           if (i < 0) {
@@ -247,7 +263,20 @@ extern void linkfiles(file_t *files, const int hard)
 #endif /* ON_WINDOWS */
         if (success) {
           if (!ISFLAG(flags, F_HIDEPROGRESS)) {
-            printf("%s ", hard ? "---->" : "-@@->");
+            switch (linktype) {
+              case 0: /* symlink */
+                printf("-@@-> ");
+                break;
+              default:
+              case 1: /* hardlink */
+                printf("---->");
+                break;
+#ifdef ENABLE_CLONEFILE_LINK
+              case 2: /* clonefile */
+                printf("-##-> ");
+                break;
+#endif
+            }
             fwprint(stdout, dupelist[x]->d_name, 1);
           }
         } else {
@@ -266,7 +295,7 @@ extern void linkfiles(file_t *files, const int hard)
           i = MoveFileW(wname2, wname) ? 0 : 1;
 #else
           i = rename(tempname, dupelist[x]->d_name);
-#endif
+#endif /* UNICODE */
           if (i != 0) {
             fprintf(stderr, "error: cannot rename temp file back to original\n");
             fprintf(stderr, "original: "); fwprint(stderr, dupelist[x]->d_name, 1);
@@ -284,7 +313,7 @@ extern void linkfiles(file_t *files, const int hard)
         i = DeleteFileW(wname2) ? 0 : 1;
 #else
         i = remove(tempname);
-#endif
+#endif /* UNICODE */
         if (i != 0) {
           /* If the temp file can't be deleted, there may be a permissions problem
            * so reverse the process and warn the user */
