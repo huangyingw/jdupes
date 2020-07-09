@@ -48,3 +48,4 @@ core
 
 # Mac OS
 .DS_Store
+.env.json
