@@ -188,12 +188,9 @@ clean:
 
 distclean: clean
 	$(RM) *.pkg.tar.xz
-	$(RM) -r jdupes-*-win*/ jdupes-*-win*.zip
-	$(RM) -r jdupes-*-mac*/ jdupes-*-mac*.zip
+	$(RM) -r jdupes-*-*/ jdupes-*-*.zip
 
-package:
+chrootpackage:
 	+./chroot_build.sh
-winpackage:
-	+./generate_windows_packages.sh
-macpackage:
-	+./generate_mac_packages.sh
+package:
+	+./generate_packages.sh
