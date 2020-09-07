@@ -1,0 +1,9 @@
+diff --git a/.gitignore b/.gitignore
+index b46020d..8c7fd3e 100644
+--- ./.gitignore
++++ ./.gitignore
+@@ -48,3 +48,4 @@ core
+ 
+ # Mac OS
+ .DS_Store
++.env.json
