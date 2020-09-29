@@ -1,7 +1,7 @@
-diff --git a/.gitignore b/.gitignore
+diff --git .gitignore .gitignore
 index b46020d..8c7fd3e 100644
---- ./.gitignore
-+++ ./.gitignore
+--- .gitignore
++++ .gitignore
 @@ -48,3 +48,4 @@ core
  
  # Mac OS
