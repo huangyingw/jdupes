@@ -540,6 +540,17 @@ static void add_extfilter(const char *option)
   /* Invoke help text if requested */
   if (strcasecmp(option, "help") == 0) { help_text_extfilter(); exit(EXIT_SUCCESS); }
 
+  /* FIXME: v1.19.0 warning that -X meanings have changed - remove after v1.19.0 */
+  static int stupid_warning = 1;
+  if (stupid_warning) {
+    fprintf(stderr, "\n==============================================================\n");
+    fprintf(stderr, "| WARNING: -X/--extfilter meanings have changed in v1.19.0!  |\n");
+    fprintf(stderr, "|          Run `jdupes -X help` and read very carefully!     |\n");
+    fprintf(stderr, "|          This warning will be removed in the next release. |\n");
+    fprintf(stderr, "==============================================================\n\n");
+    stupid_warning = 0;
+  }
+
   opt = string_malloc(strlen(option) + 1);
   if (opt == NULL) oom("add_extfilter option");
   strcpy(opt, option);
@@ -757,17 +768,18 @@ static int check_singlefile(file_t * const restrict newfile)
       uint32_t sflag = extf->flags;
       LOUD(fprintf(stderr, "check_singlefile: extfilter check: %08x %ld %ld %s\n", sflag, newfile->size, extf->size, newfile->d_name);)
       if (
+           /* Any line that passes will result in file exclusion */
            ((sflag == XF_SIZE_EQ) && (newfile->size != extf->size)) ||
-           ((sflag == XF_SIZE_LTEQ) && (newfile->size <= extf->size)) ||
-           ((sflag == XF_SIZE_GTEQ) && (newfile->size >= extf->size)) ||
-           ((sflag == XF_SIZE_GT) && (newfile->size > extf->size)) ||
-           ((sflag == XF_SIZE_LT) && (newfile->size < extf->size)) ||
+           ((sflag == XF_SIZE_LTEQ) && (newfile->size > extf->size)) ||
+           ((sflag == XF_SIZE_GTEQ) && (newfile->size < extf->size)) ||
+           ((sflag == XF_SIZE_GT) && (newfile->size <= extf->size)) ||
+           ((sflag == XF_SIZE_LT) && (newfile->size >= extf->size)) ||
            ((sflag == XF_EXCL_EXT) && match_extensions(newfile->d_name, extf->param)) ||
            ((sflag == XF_ONLY_EXT) && !match_extensions(newfile->d_name, extf->param)) ||
            ((sflag == XF_EXCL_STR) && strstr(newfile->d_name, extf->param)) ||
            ((sflag == XF_ONLY_STR) && !strstr(newfile->d_name, extf->param)) ||
-           ((sflag == XF_DATE_NEWER) && (newfile->mtime >= extf->size)) ||
-           ((sflag == XF_DATE_OLDER) && (newfile->mtime < extf->size))
+           ((sflag == XF_DATE_NEWER) && (newfile->mtime < extf->size)) ||
+           ((sflag == XF_DATE_OLDER) && (newfile->mtime >= extf->size))
       ) excluded = 1;
     }
     if (excluded) {
@@ -1553,7 +1565,8 @@ static int sort_pairs_by_mtime(file_t *f1, file_t *f2)
   if (f1->mtime < f2->mtime) return -sort_direction;
   else if (f1->mtime > f2->mtime) return sort_direction;
 
-  return 0;
+  /* If the mtimes match, use the names to break the tie */
+  return numeric_sort(f1->d_name, f2->d_name, sort_direction);
 }
 
 
@@ -1698,8 +1711,6 @@ static inline void help_text(void)
   printf(" -U --notravcheck \tdisable double-traversal safety check (BE VERY CAREFUL)\n");
   printf("                  \tThis fixes a Google Drive File Stream recursion issue\n");
   printf(" -v --version     \tdisplay jdupes version and license information\n");
-  printf(" -x --xsize=SIZE  \texclude files of size < SIZE bytes from consideration\n");
-  printf("    --xsize=+SIZE \t'+' specified before SIZE, exclude size > SIZE\n");
   printf(" -X --extfilter=x:y\tfilter files based on specified criteria\n");
   printf("                  \tUse '-X help' for detailed extfilter help\n");
   printf(" -z --zeromatch   \tconsider zero-length files to be duplicates\n");
@@ -1717,29 +1728,37 @@ static void help_text_extfilter(void)
 {
   printf("Detailed help for jdupes -X/--extfilter options\n");
   printf("General format: jdupes -X filter[:value][size_suffix]\n\n");
+
+  /* FIXME: Remove after v1.19.0 */
+  printf("****** WARNING: THE MEANINGS HAVE CHANGED IN v1.19.0 - READ CAREFULLY ******\n\n");
+
   printf("noext:ext1[,ext2,...]   \tExclude files with certain extension(s)\n\n");
   printf("onlyext:ext1[,ext2,...] \tOnly include files with certain extension(s)\n\n");
-  printf("size[+-=]:size[suffix]  \tExclude files meeting certain size criteria\n");
+  printf("size[+-=]:size[suffix]  \tOnly Include files matching size criteria\n");
   printf("                        \tSize specs: + larger, - smaller, = equal to\n");
   printf("                        \tSpecs can be mixed, i.e. size+=:100k will\n");
-  printf("                        \texclude files 100KiB or larger in size.\n\n");
+  printf("                        \tonly include files 100KiB or more in size.\n\n");
   printf("nostr:text_string       \tExclude all paths containing the string\n");
   printf("onlystr:text_string     \tOnly allow paths containing the string\n");
   printf("                        \tHINT: you can use these for directories:\n");
   printf("                        \t-X nostr:/dir_x/  or  -X onlystr:/dir_x/\n");
-  printf("newer:datetime          \tReject files newer than the specified date\n");
-  printf("older:datetime          \tReject files newer than the specified date\n");
+  printf("newer:datetime          \tOnly include files newer than specified date\n");
+  printf("older:datetime          \tOnly include files older than specified date\n");
   printf("                        \tDate/time format: \"YYYY-MM-DD HH:MM:SS\"\n");
   printf("                        \tTime is optional (remember to escape spaces!)\n");
-//  printf("\t\n");
+/*  printf("\t\n"); */
+
   printf("\nSome filters take no value or multiple values. Filters that can take\n");
-  printf("a numeric option generally support the size multipliers K/M/G/T/P/E\n");
-  printf("with or without an added iB or B. Multipliers are binary-style unless\n");
-  printf("the B is used, which will use decimal multipliers. For example,\n");
-  printf("10k or 10kib = 10240; 10kb = 10000. Multipliers are case-insensitive.\n\n");
-  printf("Filters have cumulative effects: jdupes -X size+:100 -X size-:100 will\n");
-  printf("cause only files of exactly 100 bytes in size to be included.\n\n");
-  printf("Extension matching is case-insensitive.\n");
+  printf(  "a numeric option generally support the size multipliers K/M/G/T/P/E\n");
+  printf(  "with or without an added iB or B. Multipliers are binary-style unless\n");
+  printf(  "the -B suffix is used, which will use decimal multipliers. For example,\n");
+  printf(  "16k or 16kib = 16384; 16kb = 16000. Multipliers are case-insensitive.\n\n");
+
+  printf(  "Filters have cumulative effects: jdupes -X size+:99 -X size-:101 will\n");
+  printf(  "cause only files of exactly 100 bytes in size to be included.\n\n");
+
+  printf(  "Extension matching is case-insensitive.\n");
+  printf(  "Path substring matching is case-sensitive.\n");
 }
 
 
@@ -1752,7 +1771,6 @@ int main(int argc, char **argv)
   static file_t *files = NULL;
   static file_t *curfile;
   static char **oldargv;
-  static char *xs;
   static int firstrecurse;
   static int opt;
   static int pm = 1;
@@ -1806,7 +1824,6 @@ int main(int argc, char **argv)
     { "printunique", 0, 0, 'u' },
     { "version", 0, 0, 'v' },
     { "extfilter", 1, 0, 'X' },
-    { "xsize", 1, 0, 'x' },
     { "softabort", 0, 0, 'Z' },
     { "zeromatch", 0, 0, 'z' },
     { NULL, 0, 0, 0 }
@@ -1816,7 +1833,7 @@ int main(int argc, char **argv)
 #define GETOPT getopt
 #endif
 
-#define GETOPT_STRING "@01ABC:DdfHhIijKLlMmNnOo:Pp:QqRrSsTtUuVvX:x:Zz"
+#define GETOPT_STRING "@01ABC:DdfHhIijKLlMmNnOo:Pp:QqRrSsTtUuVvX:Zz"
 
 /* Windows buffers our stderr output; don't let it do that */
 #ifdef ON_WINDOWS
@@ -2023,21 +2040,6 @@ int main(int argc, char **argv)
       SETFLAG(a_flags, FA_SHOWSIZE);
       LOUD(fprintf(stderr, "opt: show size of files enabled (--size)\n");)
       break;
-    case 'x':
-      fprintf(stderr, "-x/--xsize is deprecated; use -X size[+-=]:size[suffix] instead\n");
-      xs = string_malloc(8 + strlen(optarg));
-      if (xs == NULL) oom("xsize temp string");
-      strcpy(xs, "size");
-      if (*optarg == '+') {
-        strcat(xs, "+:");
-        optarg++;
-      } else {
-        strcat(xs, "-=:");
-      }
-      strcat(xs, optarg);
-      add_extfilter(xs);
-      string_free(xs);
-      break;
     case 'X':
       add_extfilter(optarg);
       break;
@@ -2068,11 +2070,6 @@ int main(int argc, char **argv)
         else if (sizeof(long) == 8) printf("32-bit i64\n");
       } else printf("%u-bit i%u\n", (unsigned int)(sizeof(uintptr_t) * 8),
           (unsigned int)(sizeof(long) * 8));
-
-#ifdef BUILD_DATE
-#include "build_date.h"
-      printf("Built on %s\n", BUILT_ON_DATE);
-#endif
 
       printf("Compile-time extensions:");
       if (*extensions != NULL) {
