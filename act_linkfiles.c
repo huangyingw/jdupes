@@ -10,8 +10,10 @@
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
+
 #include "act_linkfiles.h"
 #include "jody_win_unicode.h"
+#include "oom.h"
 #ifdef ON_WINDOWS
  #include "win_stat.h"
 #endif
@@ -27,8 +29,11 @@
    #error Hard link support is required for dedupe on macOS
   #endif
   #include <sys/attr.h>
-  #include <sys/clonefile.h>
-  #define ENABLE_CLONEFILE_LINK 1
+  #include <copyfile.h>
+  #ifndef NO_CLONEFILE
+   #include <sys/clonefile.h>
+   #define ENABLE_CLONEFILE_LINK 1
+  #endif /* NO_CLONEFILE */
  #endif /* __APPLE__ */
 #endif /* ENABLE_DEDUPE */
 
@@ -247,6 +252,8 @@ extern void linkfiles(file_t *files, const int linktype)
 #ifdef ENABLE_CLONEFILE_LINK
         } else if (linktype == 2) {
           if (clonefile(srcfile->d_name, dupelist[x]->d_name, 0) == 0) success = 1;
+	  /* Preserve all file metadata on macOS */
+          copyfile(tempname, dupelist[x]->d_name, NULL, COPYFILE_METADATA);
 #endif /* ENABLE_CLONEFILE_LINK */
         }
  #ifndef NO_SYMLINKS
@@ -269,7 +276,7 @@ extern void linkfiles(file_t *files, const int linktype)
                 break;
               default:
               case 1: /* hardlink */
-                printf("---->");
+                printf("----> ");
                 break;
 #ifdef ENABLE_CLONEFILE_LINK
               case 2: /* clonefile */
