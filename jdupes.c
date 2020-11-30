@@ -540,17 +540,6 @@ static void add_extfilter(const char *option)
   /* Invoke help text if requested */
   if (strcasecmp(option, "help") == 0) { help_text_extfilter(); exit(EXIT_SUCCESS); }
 
-  /* FIXME: v1.19.0 warning that -X meanings have changed - remove after v1.19.0 */
-  static int stupid_warning = 1;
-  if (stupid_warning) {
-    fprintf(stderr, "\n==============================================================\n");
-    fprintf(stderr, "| WARNING: -X/--extfilter meanings have changed in v1.19.0!  |\n");
-    fprintf(stderr, "|          Run `jdupes -X help` and read very carefully!     |\n");
-    fprintf(stderr, "|          This warning will be removed in the next release. |\n");
-    fprintf(stderr, "==============================================================\n\n");
-    stupid_warning = 0;
-  }
-
   opt = string_malloc(strlen(option) + 1);
   if (opt == NULL) oom("add_extfilter option");
   strcpy(opt, option);
@@ -1811,7 +1800,7 @@ int main(int argc, char **argv)
     { "noempty", 0, 0, 'n' },
     { "paramorder", 0, 0, 'O' },
     { "order", 1, 0, 'o' },
-    { "print", 0, 0, 'P' },
+    { "print", 1, 0, 'P' },
     { "permissions", 0, 0, 'p' },
     { "quick", 0, 0, 'Q' },
     { "quiet", 0, 0, 'q' },
@@ -1834,7 +1823,7 @@ int main(int argc, char **argv)
 #define GETOPT getopt
 #endif
 
-#define GETOPT_STRING "@01ABC:DdfHhIijKLlMmNnOo:Pp:QqRrSsTtUuVvX:Zz"
+#define GETOPT_STRING "@01ABC:DdfHhIijKLlMmNnOo:P:pQqRrSsTtUuVvX:Zz"
 
 /* Windows buffers our stderr output; don't let it do that */
 #ifdef ON_WINDOWS
@@ -1982,6 +1971,7 @@ int main(int argc, char **argv)
       LOUD(fprintf(stderr, "opt: permissions must also match (--permissions)\n");)
       break;
     case 'P':
+      LOUD(fprintf(stderr, "opt: print early: '%s' (--print)\n", optarg);)
       if (strcmp(optarg, "partial") == 0) SETFLAG(p_flags, PF_PARTIAL);
       else if (strcmp(optarg, "early") == 0) SETFLAG(p_flags, PF_EARLYMATCH);
       else if (strcmp(optarg, "fullhash") == 0) SETFLAG(p_flags, PF_FULLHASH);
