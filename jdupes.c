@@ -98,11 +98,12 @@ uint_fast32_t flags = 0, a_flags = 0, p_flags = 0;
 
 static const char *program_name;
 
-/* This gets used in many functions */
+/* Stat and SIGUSR */
 #ifdef ON_WINDOWS
  struct winstat s;
 #else
  struct stat s;
+ static int usr1_toggle = 0;
 #endif
 
 /* Larger chunk size makes large files process faster but uses more RAM */
@@ -297,8 +298,13 @@ void sighandler(const int signum)
 void sigusr1(const int signum)
 {
   (void)signum;
-  if (!ISFLAG(flags, F_SOFTABORT)) SETFLAG(flags, F_SOFTABORT);
-  else CLEARFLAG(flags, F_SOFTABORT);
+  if (!ISFLAG(flags, F_SOFTABORT)) {
+    SETFLAG(flags, F_SOFTABORT);
+    usr1_toggle = 1;
+  } else {
+    CLEARFLAG(flags, F_SOFTABORT);
+    usr1_toggle = 2;
+  }
   return;
 }
 #endif
@@ -399,6 +405,13 @@ static void update_progress(const char * const restrict msg, const int file_perc
     fflush(stderr);
   }
   time1.tv_sec = time2.tv_sec;
+#ifndef ON_WINDOWS
+  /* Notify of change to soft abort status if SIGUSR1 received */
+  if (usr1_toggle != 0) {
+    fprintf(stderr, "\njdupes received a USR1 signal; soft abort (-Z) is now %s\n", usr1_toggle == 1 ? "ON" : "OFF" );
+    usr1_toggle = 0;
+  }
+#endif
   return;
 }
 
@@ -412,7 +425,7 @@ int match_extensions(char *path, const char *extlist)
 {
   char *dot;
   const char *ext;
-  size_t len;
+  size_t len, extlen;
 
   LOUD(fprintf(stderr, "match_extensions('%s', '%s')\n", path, extlist);)
   if (path == NULL || extlist == NULL) nullptr("match_extensions");
@@ -430,26 +443,35 @@ int match_extensions(char *path, const char *extlist)
   /* Handle a dot at the end of a file name */
   if (*dot == '\0') return 0;
 
+  /* Get the length of the file's extension for later checking */
+  extlen = strlen(dot);
+  LOUD(fprintf(stderr, "match_extensions: file has extension '%s' with length %ld\n", dot, extlen);)
+
   /* dot is now at the location of the last file extension; check the list */
+  /* Skip any commas at the start of the list */
   while (*extlist == ',') extlist++;
   ext = extlist;
   len = 0;
   while (1) {
+    /* Reject upon hitting the end with no more extensions to process */
     if (*extlist == '\0' && len == 0) return 0;
+    /* Process extension once a comma or EOL is hit */
     if (*extlist == ',' || *extlist == '\0') {
+      /* Skip serial commas */
       while (*extlist == ',') extlist++;
       if (extlist == ext)  goto skip_empty;
-      if (strncmp(dot, ext, len) == 0) {
-        LOUD(fprintf(stderr, "match_extensions: matched on extension '%s'\n", dot);)
+      if (strncasecmp(dot, ext, len) == 0 && extlen == len) {
+        LOUD(fprintf(stderr, "match_extensions: matched on extension '%s' (len %ld)\n", dot, len);)
         return 1;
       }
+      LOUD(fprintf(stderr, "match_extensions: no match: '%s' (%ld), '%s' (%ld)\n", dot, len, ext, extlen);)
 skip_empty:
       ext = extlist;
-      if (*extlist != '\0') extlist++;
       len = 0;
       continue;
     }
     extlist++; len++;
+    /* LOUD(fprintf(stderr, "match_extensions: DEBUG: '%s' : '%s' (%ld), '%s' (%ld)\n", extlist, dot, len, ext, extlen);) */
   }
   return 0;
 }
@@ -642,7 +664,7 @@ extern int getdirstats(const char * const restrict name,
  * -2 on an absolute exclusion condition met
  *  2 on an absolute match condition met
  * -3 on exclusion due to isolation
- * -4 on exlusion due to same filesystem
+ * -4 on exclusion due to same filesystem
  * -5 on exclusion due to permissions */
 extern int check_conditions(const file_t * const restrict file1, const file_t * const restrict file2)
 {
@@ -748,17 +770,18 @@ static int check_singlefile(file_t * const restrict newfile)
       uint32_t sflag = extf->flags;
       LOUD(fprintf(stderr, "check_singlefile: extfilter check: %08x %ld %ld %s\n", sflag, newfile->size, extf->size, newfile->d_name);)
       if (
+           /* Any line that passes will result in file exclusion */
            ((sflag == XF_SIZE_EQ) && (newfile->size != extf->size)) ||
-           ((sflag == XF_SIZE_LTEQ) && (newfile->size <= extf->size)) ||
-           ((sflag == XF_SIZE_GTEQ) && (newfile->size >= extf->size)) ||
-           ((sflag == XF_SIZE_GT) && (newfile->size > extf->size)) ||
-           ((sflag == XF_SIZE_LT) && (newfile->size < extf->size)) ||
+           ((sflag == XF_SIZE_LTEQ) && (newfile->size > extf->size)) ||
+           ((sflag == XF_SIZE_GTEQ) && (newfile->size < extf->size)) ||
+           ((sflag == XF_SIZE_GT) && (newfile->size <= extf->size)) ||
+           ((sflag == XF_SIZE_LT) && (newfile->size >= extf->size)) ||
            ((sflag == XF_EXCL_EXT) && match_extensions(newfile->d_name, extf->param)) ||
            ((sflag == XF_ONLY_EXT) && !match_extensions(newfile->d_name, extf->param)) ||
            ((sflag == XF_EXCL_STR) && strstr(newfile->d_name, extf->param)) ||
            ((sflag == XF_ONLY_STR) && !strstr(newfile->d_name, extf->param)) ||
-           ((sflag == XF_DATE_NEWER) && (newfile->mtime >= extf->size)) ||
-           ((sflag == XF_DATE_OLDER) && (newfile->mtime < extf->size))
+           ((sflag == XF_DATE_NEWER) && (newfile->mtime < extf->size)) ||
+           ((sflag == XF_DATE_OLDER) && (newfile->mtime >= extf->size))
       ) excluded = 1;
     }
     if (excluded) {
@@ -832,6 +855,7 @@ static struct travdone *travdone_alloc(const dev_t device, const jdupes_ino_t in
 /* De-allocate the travdone tree */
 static void travdone_free(struct travdone * const restrict cur)
 {
+  LOUD(fprintf(stderr, "travdone_free(%p)\n", cur);)
   if (cur == NULL) return;
   if (cur->left != NULL) travdone_free(cur->left);
   if (cur->right != NULL) travdone_free(cur->right);
@@ -1346,7 +1370,7 @@ static file_t **checkmatch(filetree_t * restrict tree, file_t * const restrict f
 
     /* Print partial hash matching pairs if requested */
     if (cmpresult == 0 && ISFLAG(p_flags, PF_PARTIAL))
-      printf("Partial hashes match:\n   %s\n   %s\n\n", file->d_name, tree->file->d_name);
+      printf("\nPartial hashes match:\n   %s\n   %s\n\n", file->d_name, tree->file->d_name);
 
     if (file->size <= PARTIAL_HASH_SIZE || ISFLAG(flags, F_PARTIALONLY)) {
       if (ISFLAG(flags, F_PARTIALONLY)) { LOUD(fprintf(stderr, "checkmatch: partial only mode: treating partial hash as full hash\n")); }
@@ -1363,10 +1387,9 @@ static file_t **checkmatch(filetree_t * restrict tree, file_t * const restrict f
         DBG(small_file++;)
       }
     } else if (cmpresult == 0) {
-      if (ISFLAG(flags, F_SKIPHASH)) {
-        /* Skip full file hashing if requested by the user */
-        LOUD(fprintf(stderr, "checkmatch: skipping full file hashes (F_SKIPMATCH)\n"));
-      } else {
+//      if (ISFLAG(flags, F_SKIPHASH)) {
+//        LOUD(fprintf(stderr, "checkmatch: skipping full file hashes (F_SKIPMATCH)\n"));
+//      } else {
         /* If partial match was correct, perform a full file hash match */
         if (!ISFLAG(tree->file->flags, FF_HASH_FULL)) {
           filehash = get_filehash(tree->file, 0);
@@ -1389,7 +1412,7 @@ static file_t **checkmatch(filetree_t * restrict tree, file_t * const restrict f
         LOUD(if (!cmpresult) fprintf(stderr, "checkmatch: full hashes match\n"));
         LOUD(if (cmpresult) fprintf(stderr, "checkmatch: full hashes do not match\n"));
         DBG(full_hash++);
-      }
+//      }
     } else {
       DBG(partial_elim++);
     }
@@ -1545,7 +1568,8 @@ static int sort_pairs_by_mtime(file_t *f1, file_t *f2)
   if (f1->mtime < f2->mtime) return -sort_direction;
   else if (f1->mtime > f2->mtime) return sort_direction;
 
-  return 0;
+  /* If the mtimes match, use the names to break the tie */
+  return numeric_sort(f1->d_name, f2->d_name, sort_direction);
 }
 
 
@@ -1643,7 +1667,7 @@ static inline void help_text(void)
   printf(" -I --isolate     \tfiles in the same specified directory won't match\n");
 #endif
   printf(" -j --json        \tproduce JSON (machine-readable) output\n");
-  printf(" -K --skiphash    \tskip full file hashing (may be faster; 100%% safe)\n");
+/*  printf(" -K --skiphash    \tskip full file hashing (may be faster; 100%% safe)\n"); */
   printf("                  \tWARNING: in development, not fully working yet!\n");
 #ifndef NO_SYMLINKS
   printf(" -l --linksoft    \tmake relative symlinks for duplicates w/o prompting\n");
@@ -1690,8 +1714,6 @@ static inline void help_text(void)
   printf(" -U --notravcheck \tdisable double-traversal safety check (BE VERY CAREFUL)\n");
   printf("                  \tThis fixes a Google Drive File Stream recursion issue\n");
   printf(" -v --version     \tdisplay jdupes version and license information\n");
-  printf(" -x --xsize=SIZE  \texclude files of size < SIZE bytes from consideration\n");
-  printf("    --xsize=+SIZE \t'+' specified before SIZE, exclude size > SIZE\n");
   printf(" -X --extfilter=x:y\tfilter files based on specified criteria\n");
   printf("                  \tUse '-X help' for detailed extfilter help\n");
   printf(" -z --zeromatch   \tconsider zero-length files to be duplicates\n");
@@ -1709,28 +1731,37 @@ static void help_text_extfilter(void)
 {
   printf("Detailed help for jdupes -X/--extfilter options\n");
   printf("General format: jdupes -X filter[:value][size_suffix]\n\n");
+
+  /* FIXME: Remove after v1.19.0 */
+  printf("****** WARNING: THE MEANINGS HAVE CHANGED IN v1.19.0 - READ CAREFULLY ******\n\n");
+
   printf("noext:ext1[,ext2,...]   \tExclude files with certain extension(s)\n\n");
   printf("onlyext:ext1[,ext2,...] \tOnly include files with certain extension(s)\n\n");
-  printf("size[+-=]:size[suffix]  \tExclude files meeting certain size criteria\n");
+  printf("size[+-=]:size[suffix]  \tOnly Include files matching size criteria\n");
   printf("                        \tSize specs: + larger, - smaller, = equal to\n");
   printf("                        \tSpecs can be mixed, i.e. size+=:100k will\n");
-  printf("                        \texclude files 100KiB or larger in size.\n\n");
+  printf("                        \tonly include files 100KiB or more in size.\n\n");
   printf("nostr:text_string       \tExclude all paths containing the string\n");
   printf("onlystr:text_string     \tOnly allow paths containing the string\n");
   printf("                        \tHINT: you can use these for directories:\n");
   printf("                        \t-X nostr:/dir_x/  or  -X onlystr:/dir_x/\n");
-  printf("newer:datetime          \tReject files newer than the specified date\n");
-  printf("older:datetime          \tReject files newer than the specified date\n");
+  printf("newer:datetime          \tOnly include files newer than specified date\n");
+  printf("older:datetime          \tOnly include files older than specified date\n");
   printf("                        \tDate/time format: \"YYYY-MM-DD HH:MM:SS\"\n");
   printf("                        \tTime is optional (remember to escape spaces!)\n");
-//  printf("\t\n");
+/*  printf("\t\n"); */
+
   printf("\nSome filters take no value or multiple values. Filters that can take\n");
-  printf("a numeric option generally support the size multipliers K/M/G/T/P/E\n");
-  printf("with or without an added iB or B. Multipliers are binary-style unless\n");
-  printf("the B is used, which will use decimal multipliers. For example,\n");
-  printf("10k or 10kib = 10240; 10kb = 10000. Multipliers are case-insensitive.\n\n");
-  printf("Filters have cumulative effects: jdupes -X size+:100 -X size-:100 will\n");
-  printf("cause only files of exactly 100 bytes in size to be included.\n");
+  printf(  "a numeric option generally support the size multipliers K/M/G/T/P/E\n");
+  printf(  "with or without an added iB or B. Multipliers are binary-style unless\n");
+  printf(  "the -B suffix is used, which will use decimal multipliers. For example,\n");
+  printf(  "16k or 16kib = 16384; 16kb = 16000. Multipliers are case-insensitive.\n\n");
+
+  printf(  "Filters have cumulative effects: jdupes -X size+:99 -X size-:101 will\n");
+  printf(  "cause only files of exactly 100 bytes in size to be included.\n\n");
+
+  printf(  "Extension matching is case-insensitive.\n");
+  printf(  "Path substring matching is case-sensitive.\n");
 }
 
 
@@ -1743,7 +1774,6 @@ int main(int argc, char **argv)
   static file_t *files = NULL;
   static file_t *curfile;
   static char **oldargv;
-  static char *xs;
   static int firstrecurse;
   static int opt;
   static int pm = 1;
@@ -1766,43 +1796,39 @@ int main(int argc, char **argv)
     { "nohidden", 0, 0, 'A' },
     { "dedupe", 0, 0, 'B' },
     { "chunksize", 1, 0, 'C' },
-    { "delete", 0, 0, 'd' },
     { "debug", 0, 0, 'D' },
+    { "delete", 0, 0, 'd' },
     { "omitfirst", 0, 0, 'f' },
-    { "help", 0, 0, 'h' },
     { "hardlinks", 0, 0, 'H' },
-    { "reverse", 0, 0, 'i' },
+    { "help", 0, 0, 'h' },
     { "isolate", 0, 0, 'I' },
+    { "reverse", 0, 0, 'i' },
     { "json", 0, 0, 'j' },
     { "skiphash", 0, 0, 'K' },
-    { "linksoft", 0, 0, 'l' },
     { "linkhard", 0, 0, 'L' },
-    { "summarize", 0, 0, 'm'},
+    { "linksoft", 0, 0, 'l' },
     { "printwithsummary", 0, 0, 'M'},
-    { "noempty", 0, 0, 'n' },
+    { "summarize", 0, 0, 'm'},
     { "noprompt", 0, 0, 'N' },
-    { "order", 1, 0, 'o' },
+    { "noempty", 0, 0, 'n' },
     { "paramorder", 0, 0, 'O' },
+    { "order", 1, 0, 'o' },
+    { "print", 1, 0, 'P' },
     { "permissions", 0, 0, 'p' },
-    { "print", 0, 0, 'P' },
-    { "quiet", 0, 0, 'q' },
     { "quick", 0, 0, 'Q' },
-    { "recurse", 0, 0, 'r' },
-    { "recursive", 0, 0, 'r' },
+    { "quiet", 0, 0, 'q' },
     { "recurse:", 0, 0, 'R' },
-    { "recursive:", 0, 0, 'R' },
-    { "symlinks", 0, 0, 's' },
+    { "recurse", 0, 0, 'r' },
     { "size", 0, 0, 'S' },
-    { "nochangecheck", 0, 0, 't' },
+    { "symlinks", 0, 0, 's' },
     { "partial-only", 0, 0, 'T' },
-    { "printunique", 0, 0, 'u' },
+    { "nochangecheck", 0, 0, 't' },
     { "notravcheck", 0, 0, 'U' },
+    { "printunique", 0, 0, 'u' },
     { "version", 0, 0, 'v' },
-    { "xsize", 1, 0, 'x' },
-    { "exclude", 1, 0, 'X' },
     { "extfilter", 1, 0, 'X' },
-    { "zeromatch", 0, 0, 'z' },
     { "softabort", 0, 0, 'Z' },
+    { "zeromatch", 0, 0, 'z' },
     { NULL, 0, 0, 0 }
   };
 #define GETOPT getopt_long
@@ -1810,7 +1836,7 @@ int main(int argc, char **argv)
 #define GETOPT getopt
 #endif
 
-#define GETOPT_STRING "@01ABC:DdfHhIijKlLmMnNOPp:QqRrSsTtUuVvZzo:x:X:"
+#define GETOPT_STRING "@01ABC:DdfHhIijKLlMmNnOo:P:pQqRrSsTtUuVvX:Zz"
 
 /* Windows buffers our stderr output; don't let it do that */
 #ifdef ON_WINDOWS
@@ -1958,6 +1984,7 @@ int main(int argc, char **argv)
       LOUD(fprintf(stderr, "opt: permissions must also match (--permissions)\n");)
       break;
     case 'P':
+      LOUD(fprintf(stderr, "opt: print early: '%s' (--print)\n", optarg);)
       if (strcmp(optarg, "partial") == 0) SETFLAG(p_flags, PF_PARTIAL);
       else if (strcmp(optarg, "early") == 0) SETFLAG(p_flags, PF_EARLYMATCH);
       else if (strcmp(optarg, "fullhash") == 0) SETFLAG(p_flags, PF_FULLHASH);
@@ -1971,6 +1998,7 @@ int main(int argc, char **argv)
       break;
     case 'Q':
       SETFLAG(flags, F_QUICKCOMPARE);
+      fprintf(stderr, "\nBIG FAT WARNING: -Q/--quick MAY BE DANGEROUS! Read the manual!\n\n");
       LOUD(fprintf(stderr, "opt: byte-for-byte safety check disabled (--quick)\n");)
       break;
     case 'r':
@@ -1990,6 +2018,7 @@ int main(int argc, char **argv)
         partialonly_spec = 1;
       else {
         partialonly_spec = 2;
+        fprintf(stderr, "\nBIG FAT WARNING: -T/--partialonly is EXTREMELY DANGEROUS! Read the manual!\n\n");
         SETFLAG(flags, F_PARTIALONLY);
       }
       break;
@@ -2014,21 +2043,6 @@ int main(int argc, char **argv)
     case 'S':
       SETFLAG(a_flags, FA_SHOWSIZE);
       LOUD(fprintf(stderr, "opt: show size of files enabled (--size)\n");)
-      break;
-    case 'x':
-      fprintf(stderr, "-x/--xsize is deprecated; use -X size[+-=]:size[suffix] instead\n");
-      xs = string_malloc(8 + strlen(optarg));
-      if (xs == NULL) oom("xsize temp string");
-      strcpy(xs, "size");
-      if (*optarg == '+') {
-        strcat(xs, "+:");
-        optarg++;
-      } else {
-        strcat(xs, "-=:");
-      }
-      strcat(xs, optarg);
-      add_extfilter(xs);
-      string_free(xs);
       break;
     case 'X':
       add_extfilter(optarg);
@@ -2060,11 +2074,6 @@ int main(int argc, char **argv)
         else if (sizeof(long) == 8) printf("32-bit i64\n");
       } else printf("%u-bit i%u\n", (unsigned int)(sizeof(uintptr_t) * 8),
           (unsigned int)(sizeof(long) * 8));
-
-#ifdef BUILD_DATE
-#include "build_date.h"
-      printf("Built on %s\n", BUILT_ON_DATE);
-#endif
 
       printf("Compile-time extensions:");
       if (*extensions != NULL) {
@@ -2191,6 +2200,11 @@ int main(int argc, char **argv)
   }
   if (pm == 0) SETFLAG(a_flags, FA_PRINTMATCHES);
 
+#ifndef ON_WINDOWS
+  /* Catch SIGUSR1 and use it to enable -Z */
+  signal(SIGUSR1, sigusr1);
+#endif
+
   if (ISFLAG(flags, F_RECURSEAFTER)) {
     firstrecurse = nonoptafter("--recurse:", argc, oldargv, argv);
 
@@ -2242,10 +2256,6 @@ int main(int argc, char **argv)
 
   /* Catch CTRL-C */
   signal(SIGINT, sighandler);
-#ifndef ON_WINDOWS
-  /* Catch SIGUSR1 and use it to enable -Z */
-  signal(SIGUSR1, sigusr1);
-#endif
 
   while (curfile) {
     static file_t **match = NULL;

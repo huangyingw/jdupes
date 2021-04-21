@@ -42,7 +42,7 @@ MAN_DIR = $(MAN_BASE_DIR)/man1
 MAN_EXT = 1
 
 # Required External Tools
-INSTALL = install	# install : UCB/GNU Install compatiable
+INSTALL = install	# install : UCB/GNU Install compatible
 #INSTALL = ginstall
 RM      = rm -f
 RMDIR	= rmdir -p
@@ -52,8 +52,8 @@ MKDIR   = mkdir -p
 
 # Make Configuration
 CC ?= gcc
-COMPILER_OPTIONS = -Wall -Wextra -Wwrite-strings -Wcast-align -Wstrict-aliasing -Wstrict-overflow -Wstrict-prototypes -Wpointer-arith -Wundef
-COMPILER_OPTIONS += -Wshadow -Wfloat-equal -Wstrict-overflow=5 -Waggregate-return -Wcast-qual -Wswitch-default -Wswitch-enum -Wconversion -Wunreachable-code -Wformat=2 -Winit-self
+COMPILER_OPTIONS = -Wall -Wwrite-strings -Wcast-align -Wstrict-aliasing -Wstrict-prototypes -Wpointer-arith -Wundef
+COMPILER_OPTIONS += -Wshadow -Wfloat-equal -Waggregate-return -Wcast-qual -Wswitch-default -Wswitch-enum -Wconversion -Wunreachable-code -Wformat=2
 COMPILER_OPTIONS += -std=gnu99 -O2 -g -D_FILE_OFFSET_BITS=64 -fstrict-aliasing -pipe
 COMPILER_OPTIONS += -DSMA_MAX_FREE=11
 
@@ -61,11 +61,10 @@ COMPILER_OPTIONS += -DSMA_MAX_FREE=11
 # no need to modify anything beyond this point                      #
 #####################################################################
 
-# Set built-on date for display in program version info screen
-ifdef EMBED_BUILD_DATE
-BD=$(shell date +"\"%Y-%m-%d %H:%M:%S %z\"")
-$(shell echo "#define BUILT_ON_DATE \"$(BD)\"" > build_date.h)
-COMPILER_OPTIONS += -DBUILD_DATE
+# Don't use unsupported compiler options on gcc 3/4 (OS X 10.5.8 Xcode)
+GCCVERSION = $(shell expr `gcc -v 2>&1 | grep 'gcc version ' | cut -d\  -f3 | cut -d. -f1` \>= 5)
+ifeq "$(GCCVERSION)" "1"
+	COMPILER_OPTIONS += -Wextra -Wstrict-overflow=5 -Winit-self
 endif
 
 # Debugging code inclusion
@@ -90,22 +89,31 @@ ifneq (,$(findstring DENABLE_DEDUPE,$(CFLAGS) $(CFLAGS_EXTRA)))
 	ENABLE_DEDUPE=1
 endif
 
+UNAME_S=$(shell uname -s)
+
 # MinGW needs this for printf() conversions to work
 ifeq ($(OS), Windows_NT)
-ifndef NO_UNICODE
-	UNICODE=1
-	COMPILER_OPTIONS += -municode
-	PROGRAM_SUFFIX=.exe
-endif
+	ifndef NO_UNICODE
+		UNICODE=1
+		COMPILER_OPTIONS += -municode
+		PROGRAM_SUFFIX=.exe
+	endif
 	COMPILER_OPTIONS += -D__USE_MINGW_ANSI_STDIO=1 -DON_WINDOWS=1
 	OBJS += win_stat.o
-	UNAME_S=$(shell uname -s)
 	ifeq ($(UNAME_S), MINGW32_NT-5.1)
 		OBJS += winres_xp.o
 	else
 		OBJS += winres.o
 	endif
 	override undefine ENABLE_DEDUPE
+endif
+
+# Don't do clonefile on Mac OS X < 10.13 (High Sierra)
+ifeq ($(UNAME_S), Darwin)
+	DARWINVER := $(shell expr `uname -r | cut -d. -f1` \< 17)
+	ifeq "$(DARWINVER)" "1"
+		COMPILER_OPTIONS += -DNO_CLONEFILE=1
+	endif
 endif
 
 # Compatibility mappings for dedupe feature
@@ -147,8 +155,6 @@ OBJS += act_deletefiles.o act_linkfiles.o act_printmatches.o act_summarize.o act
 OBJS += xxhash.o
 OBJS += $(ADDITIONAL_OBJECTS)
 
-OBJS_CLEAN += jdupes-standalone
-
 all: $(PROGRAM_NAME)
 
 static: $(PROGRAM_NAME)
@@ -168,8 +174,6 @@ winres.o: winres.rc winres.manifest.xml
 winres_xp.o: winres_xp.rc
 	./tune_winres.sh
 	windres winres_xp.rc winres_xp.o
-
-standalone: jdupes-standalone
 
 installdirs:
 	test -e $(DESTDIR)$(BIN_DIR) || $(MKDIR) $(DESTDIR)$(BIN_DIR)

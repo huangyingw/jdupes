@@ -8,19 +8,21 @@
 #include "jody_sort.h"
 
 #define IS_NUM(a) (((a >= '0') && (a <= '9')) ? 1 : 0)
+#define IS_LOWER(a) (((a >= 'a') && (a <= 'z')) ? 1 : 0)
 
-extern int numeric_sort(const char * restrict c1,
-                const char * restrict c2, int sort_direction)
+extern int numeric_sort(char * restrict c1,
+                char * restrict c2, int sort_direction)
 {
   int len1 = 0, len2 = 0;
-  int precompare = 0;
+  int precompare;
+  char *rewind1, *rewind2;
 
   if (c1 == NULL || c2 == NULL) return -99;
 
   /* Numerically correct sort */
   while (*c1 != '\0' && *c2 != '\0') {
-    /* Reset string length counters */
-    len1 = 0; len2 = 0;
+    /* Reset string length counters and rewind points */
+    len1 = 0; len2 = 0; rewind1 = c1; rewind2 = c2;
 
     /* Skip all sequences of zeroes */
     while (*c1 == '0') {
@@ -65,6 +67,10 @@ extern int numeric_sort(const char * restrict c1,
        * of equal length. Use the precompare result
        * as the result for this number comparison. */
       if (precompare != 0) return precompare;
+    } else {
+      /* Zeroes aren't followed by a digit; rewind the streams */
+      c1 = rewind1; c2 = rewind2;
+      len1 = 0; len2 = 0;
     }
 
     /* Do normal comparison */
@@ -74,15 +80,22 @@ extern int numeric_sort(const char * restrict c1,
     /* Put symbols and spaces after everything else */
     } else if (*c2 < '.' && *c1 >= '.') return -sort_direction;
     else if (*c1 < '.' && *c2 >= '.') return sort_direction;
-    /* Normal strcmp() style compare */
-    else if (*c1 > *c2) return sort_direction;
-    else return -sort_direction;
+    /* Normal strcasecmp() style compare */
+    else {
+      char s1 = *c1, s2 = *c2;
+      /* Convert lowercase into uppercase */
+      if (IS_LOWER(s1)) s1 = (char)(s1 - 32);
+      if (IS_LOWER(s2)) s2 = (char)(s2 - 32);
+      if (s1 > s2) return sort_direction;
+      else return -sort_direction;
+    }
   }
 
   /* Longer strings generally sort later */
   if (len1 < len2) return -sort_direction;
   if (len1 > len2) return sort_direction;
-  /* Normal strcmp() style comparison */
+
+  /* Normal comparison - FIXME? length check should already handle these */
   if (*c1 == '\0' && *c2 != '\0') return -sort_direction;
   if (*c1 != '\0' && *c2 == '\0') return sort_direction;
 
