@@ -3,7 +3,7 @@
     fetch = +refs/heads/*:refs/remotes/jbruchon/*
 [gsync]
     remote = jbruchon
-    branch = master
+    target = jbruchon/master
 [push]
     remote = origin
 [branch "master"]
